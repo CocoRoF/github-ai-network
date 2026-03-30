@@ -26,8 +26,8 @@ class Author(Base):
     following = Column(Integer, default=0)
     public_repos = Column(Integer, default=0)
     user_type = Column(String(50), default="User")
-    crawled_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=utcnow)
+    crawled_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
     repositories = relationship("Repository", back_populates="owner")
 
@@ -51,10 +51,10 @@ class Repository(Base):
     fork_source_id = Column(Integer, ForeignKey("repositories.id"), nullable=True)
     homepage = Column(String(512), nullable=True)
     default_branch = Column(String(100), default="main")
-    repo_created_at = Column(DateTime, nullable=True)
-    repo_updated_at = Column(DateTime, nullable=True)
-    crawled_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=utcnow)
+    repo_created_at = Column(DateTime(timezone=True), nullable=True)
+    repo_updated_at = Column(DateTime(timezone=True), nullable=True)
+    crawled_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
     owner = relationship("Author", back_populates="repositories")
     topics = relationship("RepoTopic", back_populates="repository")
@@ -66,7 +66,7 @@ class Topic(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), unique=True, nullable=False, index=True)
-    created_at = Column(DateTime, default=utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
 
     repositories = relationship("RepoTopic", back_populates="topic")
 
@@ -114,5 +114,5 @@ class CrawlTask(Base):
     status = Column(String(20), default="pending")
     result_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=utcnow)
-    processed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
