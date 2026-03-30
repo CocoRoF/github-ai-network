@@ -1,0 +1,59 @@
+services:
+  backend:
+    build: ./backend
+    container_name: github-ai-network-backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/github_ai_network
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - CRAWLER_AUTO_START=${CRAWLER_AUTO_START:-false}
+      - CRAWLER_DELAY=${CRAWLER_DELAY:-2.0}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:58440}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: github-ai-network-frontend
+    networks:
+      - app-network
+
+  nginx:
+    build: ./nginx
+    container_name: github-ai-network-nginx
+    ports:
+      - "58440:58440"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: github-ai-network-db
+    environment:
+      - POSTGRES_DB=github_ai_network
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  app-network:
+    driver: bridge

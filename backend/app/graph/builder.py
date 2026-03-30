@@ -1,0 +1,335 @@
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Author, Repository, Topic, RepoTopic, RepoContributor
+
+
+def _repo_node(repo: Repository) -> dict:
+    return {
+        "id": f"repo:{repo.id}",
+        "type": "repo",
+        "label": repo.full_name,
+        "val": max(1, (repo.stars or 0) ** 0.5),
+        "stars": repo.stars,
+        "language": repo.language,
+        "description": repo.description,
+        "url": f"https://github.com/{repo.full_name}",
+    }
+
+
+def _author_node(author: Author) -> dict:
+    return {
+        "id": f"author:{author.id}",
+        "type": "author",
+        "label": author.login,
+        "val": max(1, (author.followers or 0) ** 0.4),
+        "followers": author.followers,
+        "avatar_url": author.avatar_url,
+        "url": f"https://github.com/{author.login}",
+    }
+
+
+def _topic_node(topic: Topic, repo_count: int = 1) -> dict:
+    return {
+        "id": f"topic:{topic.id}",
+        "type": "topic",
+        "label": topic.name,
+        "val": max(1, repo_count ** 0.6),
+        "repo_count": repo_count,
+    }
+
+
+class GraphBuilder:
+
+    @staticmethod
+    async def build_graph(
+        session: AsyncSession,
+        limit: int = 300,
+        min_stars: int = 0,
+        node_types: list[str] | None = None,
+        search: str | None = None,
+    ) -> dict:
+        if node_types is None:
+            node_types = ["author", "repo", "topic"]
+
+        nodes: list[dict] = []
+        links: list[dict] = []
+        node_ids: set[str] = set()
+
+        # ── repos ─────────────────────────────────────────
+        query = select(Repository).order_by(Repository.stars.desc())
+        if min_stars > 0:
+            query = query.where(Repository.stars >= min_stars)
+        if search:
+            pattern = f"%{search}%"
+            query = query.where(
+                Repository.full_name.ilike(pattern)
+                | Repository.description.ilike(pattern)
+            )
+        query = query.limit(limit)
+
+        repos = (await session.execute(query)).scalars().all()
+        repo_ids: set[int] = set()
+        owner_ids: set[int] = set()
+
+        if "repo" in node_types:
+            for r in repos:
+                nodes.append(_repo_node(r))
+                node_ids.add(f"repo:{r.id}")
+                repo_ids.add(r.id)
+                if r.owner_id:
+                    owner_ids.add(r.owner_id)
+
+        # ── authors (owners) ──────────────────────────────
+        if "author" in node_types and owner_ids:
+            authors = (
+                await session.execute(select(Author).where(Author.id.in_(owner_ids)))
+            ).scalars().all()
+
+            for a in authors:
+                nid = f"author:{a.id}"
+                nodes.append(_author_node(a))
+                node_ids.add(nid)
+
+            for r in repos:
+                if r.owner_id and f"author:{r.owner_id}" in node_ids:
+                    links.append({
+                        "source": f"author:{r.owner_id}",
+                        "target": f"repo:{r.id}",
+                        "type": "owns",
+                    })
+
+        # ── topics ────────────────────────────────────────
+        if "topic" in node_types and repo_ids:
+            repo_topics = (
+                await session.execute(
+                    select(RepoTopic).where(RepoTopic.repository_id.in_(repo_ids))
+                )
+            ).scalars().all()
+
+            topic_ids_needed: set[int] = set()
+            topic_repo_count: dict[int, int] = {}
+            for rt in repo_topics:
+                topic_ids_needed.add(rt.topic_id)
+                topic_repo_count[rt.topic_id] = topic_repo_count.get(rt.topic_id, 0) + 1
+
+            if topic_ids_needed:
+                topics = (
+                    await session.execute(
+                        select(Topic).where(Topic.id.in_(topic_ids_needed))
+                    )
+                ).scalars().all()
+
+                for t in topics:
+                    nid = f"topic:{t.id}"
+                    nodes.append(_topic_node(t, topic_repo_count.get(t.id, 1)))
+                    node_ids.add(nid)
+
+                for rt in repo_topics:
+                    src = f"repo:{rt.repository_id}"
+                    tgt = f"topic:{rt.topic_id}"
+                    if src in node_ids and tgt in node_ids:
+                        links.append({"source": src, "target": tgt, "type": "has_topic"})
+
+        # ── contributor edges (only between existing nodes) ──
+        if "author" in node_types and repo_ids:
+            author_db_ids = [
+                int(nid.split(":")[1]) for nid in node_ids if nid.startswith("author:")
+            ]
+            if author_db_ids:
+                contribs = (
+                    await session.execute(
+                        select(RepoContributor).where(
+                            RepoContributor.repository_id.in_(repo_ids),
+                            RepoContributor.author_id.in_(author_db_ids),
+                        )
+                    )
+                ).scalars().all()
+
+                for c in contribs:
+                    src = f"author:{c.author_id}"
+                    tgt = f"repo:{c.repository_id}"
+                    if src in node_ids and tgt in node_ids:
+                        existing_own = any(
+                            l["source"] == src and l["target"] == tgt and l["type"] == "owns"
+                            for l in links
+                        )
+                        if not existing_own:
+                            links.append({
+                                "source": src,
+                                "target": tgt,
+                                "type": "contributes",
+                            })
+
+        return {
+            "nodes": nodes,
+            "links": links,
+            "stats": {
+                "total_nodes": len(nodes),
+                "total_links": len(links),
+                "repos": sum(1 for n in nodes if n["type"] == "repo"),
+                "authors": sum(1 for n in nodes if n["type"] == "author"),
+                "topics": sum(1 for n in nodes if n["type"] == "topic"),
+            },
+        }
+
+    @staticmethod
+    async def get_neighbors(
+        session: AsyncSession,
+        node_id: str,
+        depth: int = 1,
+    ) -> dict:
+        parts = node_id.split(":")
+        if len(parts) != 2:
+            return {"nodes": [], "links": [], "stats": {}}
+
+        node_type, db_id = parts[0], int(parts[1])
+        nodes: list[dict] = []
+        links: list[dict] = []
+        node_ids: set[str] = set()
+
+        if node_type == "repo":
+            repo = (
+                await session.execute(select(Repository).where(Repository.id == db_id))
+            ).scalar_one_or_none()
+            if not repo:
+                return {"nodes": [], "links": [], "stats": {}}
+
+            nodes.append(_repo_node(repo))
+            node_ids.add(f"repo:{repo.id}")
+
+            # owner
+            if repo.owner_id:
+                owner = (
+                    await session.execute(select(Author).where(Author.id == repo.owner_id))
+                ).scalar_one_or_none()
+                if owner:
+                    nodes.append(_author_node(owner))
+                    node_ids.add(f"author:{owner.id}")
+                    links.append({
+                        "source": f"author:{owner.id}",
+                        "target": f"repo:{repo.id}",
+                        "type": "owns",
+                    })
+
+            # topics
+            rows = (
+                await session.execute(
+                    select(RepoTopic, Topic)
+                    .join(Topic)
+                    .where(RepoTopic.repository_id == repo.id)
+                )
+            ).all()
+            for rt, topic in rows:
+                tid = f"topic:{topic.id}"
+                if tid not in node_ids:
+                    nodes.append(_topic_node(topic))
+                    node_ids.add(tid)
+                links.append({
+                    "source": f"repo:{repo.id}",
+                    "target": tid,
+                    "type": "has_topic",
+                })
+
+            # contributors
+            rows = (
+                await session.execute(
+                    select(RepoContributor, Author)
+                    .join(Author, RepoContributor.author_id == Author.id)
+                    .where(RepoContributor.repository_id == repo.id)
+                )
+            ).all()
+            for contrib, author in rows:
+                aid = f"author:{author.id}"
+                if aid not in node_ids:
+                    nodes.append(_author_node(author))
+                    node_ids.add(aid)
+                links.append({
+                    "source": aid,
+                    "target": f"repo:{repo.id}",
+                    "type": "contributes",
+                })
+
+        elif node_type == "author":
+            author = (
+                await session.execute(select(Author).where(Author.id == db_id))
+            ).scalar_one_or_none()
+            if not author:
+                return {"nodes": [], "links": [], "stats": {}}
+
+            nodes.append(_author_node(author))
+            node_ids.add(f"author:{author.id}")
+
+            owned = (
+                await session.execute(
+                    select(Repository)
+                    .where(Repository.owner_id == db_id)
+                    .order_by(Repository.stars.desc())
+                    .limit(20)
+                )
+            ).scalars().all()
+            for r in owned:
+                rid = f"repo:{r.id}"
+                nodes.append(_repo_node(r))
+                node_ids.add(rid)
+                links.append({
+                    "source": f"author:{author.id}",
+                    "target": rid,
+                    "type": "owns",
+                })
+
+            contributed = (
+                await session.execute(
+                    select(RepoContributor, Repository)
+                    .join(Repository)
+                    .where(RepoContributor.author_id == db_id)
+                    .order_by(Repository.stars.desc())
+                    .limit(20)
+                )
+            ).all()
+            for contrib, r in contributed:
+                rid = f"repo:{r.id}"
+                if rid not in node_ids:
+                    nodes.append(_repo_node(r))
+                    node_ids.add(rid)
+                links.append({
+                    "source": f"author:{author.id}",
+                    "target": rid,
+                    "type": "contributes",
+                })
+
+        elif node_type == "topic":
+            topic = (
+                await session.execute(select(Topic).where(Topic.id == db_id))
+            ).scalar_one_or_none()
+            if not topic:
+                return {"nodes": [], "links": [], "stats": {}}
+
+            nodes.append(_topic_node(topic))
+            node_ids.add(f"topic:{topic.id}")
+
+            rows = (
+                await session.execute(
+                    select(RepoTopic, Repository)
+                    .join(Repository)
+                    .where(RepoTopic.topic_id == db_id)
+                    .order_by(Repository.stars.desc())
+                    .limit(50)
+                )
+            ).all()
+            for rt, r in rows:
+                rid = f"repo:{r.id}"
+                if rid not in node_ids:
+                    nodes.append(_repo_node(r))
+                    node_ids.add(rid)
+                links.append({
+                    "source": rid,
+                    "target": f"topic:{topic.id}",
+                    "type": "has_topic",
+                })
+
+        return {
+            "nodes": nodes,
+            "links": links,
+            "stats": {"total_nodes": len(nodes), "total_links": len(links)},
+        }
