@@ -21,7 +21,6 @@ class CrawlSession(Base):
     seed_type = Column(String(50), nullable=False)      # search_query | repository | user
     seed_value = Column(String(512), nullable=False)
     status = Column(String(20), default="running")       # running | paused | completed | error
-    max_depth = Column(Integer, default=3)
     # counter cache fields
     total_repos = Column(Integer, default=0)
     total_authors = Column(Integer, default=0)

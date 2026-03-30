@@ -36,7 +36,6 @@ class CreateSessionRequest(BaseModel):
     name: str
     seed_type: str  # search_query | repository | user
     seed_value: str
-    max_depth: int = 3
 
 
 @admin_router.get("/sessions")
@@ -49,14 +48,11 @@ async def list_sessions(request: Request, _=Depends(require_admin)):
 async def create_session(body: CreateSessionRequest, request: Request, _=Depends(require_admin)):
     if body.seed_type not in ("search_query", "repository", "user"):
         raise HTTPException(status_code=400, detail="Invalid seed_type")
-    if body.max_depth < 1 or body.max_depth > 5:
-        raise HTTPException(status_code=400, detail="max_depth must be 1-5")
     crawler = _get_crawler(request)
     cs = await crawler.create_session(
         name=body.name,
         seed_type=body.seed_type,
         seed_value=body.seed_value,
-        max_depth=body.max_depth,
     )
     return await crawler.get_session(cs.id)
 

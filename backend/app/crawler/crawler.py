@@ -32,14 +32,13 @@ class CrawlerManager:
     # ── session management ────────────────────────────────
 
     async def create_session(
-        self, name: str, seed_type: str, seed_value: str, max_depth: int = 3,
+        self, name: str, seed_type: str, seed_value: str,
     ) -> CrawlSession:
         async with async_session_factory() as session:
             cs = CrawlSession(
                 name=name,
                 seed_type=seed_type,
                 seed_value=seed_value,
-                max_depth=max_depth,
                 status="running",
                 tasks_pending=1,
             )
@@ -154,7 +153,6 @@ class CrawlerManager:
             "seed_type": cs.seed_type,
             "seed_value": cs.seed_value,
             "status": cs.status,
-            "max_depth": cs.max_depth,
             "total_repos": cs.total_repos,
             "total_authors": cs.total_authors,
             "tasks_pending": cs.tasks_pending,
@@ -299,10 +297,7 @@ class CrawlerManager:
         target: str,
         depth: int = 0,
         priority: int = 0,
-        max_depth: int = 3,
     ):
-        if depth > max_depth:
-            return
         existing = await session.execute(
             select(CrawlTask).where(
                 CrawlTask.session_id == session_id,
@@ -362,9 +357,6 @@ class CrawlerManager:
     async def _process(self, session: AsyncSession, task: CrawlTask) -> int:
         logger.info("Processing [%s] %s (session=%d depth=%d)",
                      task.task_type, task.target, task.session_id, task.depth)
-        # load session for max_depth
-        cs = await session.get(CrawlSession, task.session_id)
-        max_depth = cs.max_depth if cs else 3
 
         handlers = {
             "search_repos": self._do_search_repos,
@@ -376,13 +368,13 @@ class CrawlerManager:
         if handler is None:
             logger.warning("Unknown task type: %s", task.task_type)
             return 0
-        return await handler(session, task.session_id, task.target, task.depth, max_depth)
+        return await handler(session, task.session_id, task.target, task.depth)
 
     # ── search_repos ──────────────────────────────────────
 
     async def _do_search_repos(
         self, session: AsyncSession, session_id: int,
-        query: str, depth: int, max_depth: int,
+        query: str, depth: int,
     ) -> int:
         count = 0
         for page in range(1, 4):
@@ -399,7 +391,6 @@ class CrawlerManager:
                         "fetch_contributors", item["full_name"],
                         depth=depth + 1,
                         priority=min(item.get("stargazers_count", 0), 10000),
-                        max_depth=max_depth,
                     )
             if len(data["items"]) < 30:
                 break
@@ -410,7 +401,7 @@ class CrawlerManager:
 
     async def _do_fetch_repo(
         self, session: AsyncSession, session_id: int,
-        full_name: str, depth: int, max_depth: int,
+        full_name: str, depth: int,
     ) -> int:
         data = await self.client.get_repository(full_name)
         if not data:
@@ -429,7 +420,7 @@ class CrawlerManager:
             await self._add_task(
                 session, session_id,
                 "fetch_user", data["owner"]["login"],
-                depth=depth + 1, priority=100, max_depth=max_depth,
+                depth=depth + 1, priority=100,
             )
 
         # fork parent
@@ -442,7 +433,7 @@ class CrawlerManager:
             await self._add_task(
                 session, session_id,
                 "fetch_repo", parent_data["full_name"],
-                depth=depth + 1, priority=500, max_depth=max_depth,
+                depth=depth + 1, priority=500,
             )
 
         await self._add_task(
@@ -450,7 +441,6 @@ class CrawlerManager:
             "fetch_contributors", full_name,
             depth=depth + 1,
             priority=min(data.get("stargazers_count", 0), 10000),
-            max_depth=max_depth,
         )
 
         await session.commit()
@@ -460,7 +450,7 @@ class CrawlerManager:
 
     async def _do_fetch_user(
         self, session: AsyncSession, session_id: int,
-        login: str, depth: int, max_depth: int,
+        login: str, depth: int,
     ) -> int:
         data = await self.client.get_user(login)
         if not data:
@@ -486,7 +476,6 @@ class CrawlerManager:
                             "fetch_contributors", rd["full_name"],
                             depth=depth + 1,
                             priority=min(rd.get("stargazers_count", 0), 5000),
-                            max_depth=max_depth,
                         )
 
         await session.commit()
@@ -496,7 +485,7 @@ class CrawlerManager:
 
     async def _do_fetch_contributors(
         self, session: AsyncSession, session_id: int,
-        full_name: str, depth: int, max_depth: int,
+        full_name: str, depth: int,
     ) -> int:
         data = await self.client.get_repo_contributors(full_name, per_page=15)
         if not data or not isinstance(data, list):
@@ -537,7 +526,6 @@ class CrawlerManager:
                 "fetch_user", cd["login"],
                 depth=depth + 1,
                 priority=min(cd.get("contributions", 0), 1000),
-                max_depth=max_depth,
             )
             count += 1
 

@@ -17,7 +17,6 @@ export default function AdminPage() {
     name: "",
     seed_type: "search_query",
     seed_value: "",
-    max_depth: 3,
   });
 
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -111,7 +110,7 @@ export default function AdminPage() {
       if (r.ok) {
         const s = await r.json();
         setShowNewForm(false);
-        setNewSession({ name: "", seed_type: "search_query", seed_value: "", max_depth: 3 });
+        setNewSession({ name: "", seed_type: "search_query", seed_value: "" });
         await fetchSessions();
         setSelectedSessionId(s.id);
       }
@@ -230,18 +229,6 @@ export default function AdminPage() {
                 }
                 required
               />
-              <label className="admin-label">
-                Max Depth: {newSession.max_depth}
-                <input
-                  type="range"
-                  min={1}
-                  max={5}
-                  value={newSession.max_depth}
-                  onChange={(e) =>
-                    setNewSession({ ...newSession, max_depth: +e.target.value })
-                  }
-                />
-              </label>
               <button type="submit" className="btn btn-primary">
                 Create & Start
               </button>
@@ -291,12 +278,6 @@ export default function AdminPage() {
                   >
                     {" "}
                     {sessionDetail.status}
-                  </span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">Max Depth</span>
-                  <span className="detail-value">
-                    {sessionDetail.max_depth}
                   </span>
                 </div>
                 <div className="detail-item">
