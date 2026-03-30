@@ -103,10 +103,14 @@ export default function Sidebar({
             <span>Topics: {crawlerStatus.total_topics ?? "–"}</span>
             <span>Pending tasks: {crawlerStatus.tasks_pending ?? "–"}</span>
             <span>Done tasks: {crawlerStatus.tasks_done ?? "–"}</span>
+            <span>Errors: {crawlerStatus.tasks_errors ?? "–"}</span>
             <span>
               API remaining: {crawlerStatus.rate_limit_remaining ?? "–"}
             </span>
           </div>
+          {crawlerStatus.last_error && (
+            <div className="crawler-error">{crawlerStatus.last_error}</div>
+          )}
           <button className="btn btn-crawler" onClick={onCrawlerToggle}>
             {crawlerStatus.running ? "Stop Crawler" : "Start Crawler"}
           </button>

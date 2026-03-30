@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     crawler_delay: float = 2.0
     crawler_batch_size: int = 10
     crawler_auto_start: bool = False
-    cors_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost,http://localhost:58440"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost,http://localhost:58440,https://ai-network.hrletsgo.me"
 
     @property
     def cors_origin_list(self) -> list[str]:

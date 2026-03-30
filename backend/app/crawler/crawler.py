@@ -20,6 +20,7 @@ class GitHubCrawler:
         self.client = GitHubClient()
         self.running = False
         self._task: asyncio.Task | None = None
+        self._last_error: str | None = None
 
     # ── queue helpers ──────────────────────────────────────
 
@@ -70,8 +71,21 @@ class GitHubCrawler:
         if self.running:
             return
         self.running = True
+        self._last_error = None
         self._task = asyncio.create_task(self._run())
+        self._task.add_done_callback(self._on_task_done)
         logger.info("Crawler started")
+
+    def _on_task_done(self, task: asyncio.Task):
+        self.running = False
+        if task.cancelled():
+            logger.info("Crawler task was cancelled")
+        elif task.exception():
+            exc = task.exception()
+            self._last_error = f"Crawler crashed: {exc}"
+            logger.error("Crawler task crashed: %s", exc, exc_info=exc)
+        else:
+            logger.info("Crawler task finished normally")
 
     async def stop(self):
         self.running = False
@@ -91,7 +105,12 @@ class GitHubCrawler:
     # ── main loop ─────────────────────────────────────────
 
     async def _run(self):
-        await self.seed_queue()
+        try:
+            await self.seed_queue()
+        except Exception as exc:
+            logger.error("Failed to seed crawl queue: %s", exc, exc_info=True)
+            self._last_error = f"Seed failed: {exc}"
+            raise
 
         while self.running:
             try:
@@ -106,10 +125,18 @@ class GitHubCrawler:
                         count = await self._process(session, task)
                         task.status = "done"
                         task.result_count = count
+                        logger.info(
+                            "Task %d [%s] done – %d items",
+                            task.id, task.task_type, count,
+                        )
                     except Exception as exc:
                         task.status = "error"
                         task.error_message = str(exc)[:500]
-                        logger.error("Task %d error: %s", task.id, exc)
+                        self._last_error = f"Task {task.id} [{task.task_type}]: {exc}"
+                        logger.error(
+                            "Task %d [%s] error: %s",
+                            task.id, task.task_type, exc, exc_info=True,
+                        )
 
                     task.processed_at = datetime.now(timezone.utc)
                     await session.commit()
@@ -117,7 +144,8 @@ class GitHubCrawler:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.error("Crawler loop error: %s", exc)
+                self._last_error = f"Loop error: {exc}"
+                logger.error("Crawler loop error: %s", exc, exc_info=True)
                 await asyncio.sleep(10)
 
     # ── task dispatcher ───────────────────────────────────
@@ -409,8 +437,11 @@ class GitHubCrawler:
                 select(func.count(Topic.id))
             )).scalar() or 0
 
+        task_alive = self._task is not None and not self._task.done()
+
         return {
-            "running": self.running,
+            "running": self.running and task_alive,
+            "task_alive": task_alive,
             "tasks_pending": pending,
             "tasks_done": done,
             "tasks_errors": errors,
@@ -418,4 +449,5 @@ class GitHubCrawler:
             "total_authors": total_authors,
             "total_topics": total_topics,
             "rate_limit_remaining": self.client.rate_limit_remaining,
+            "last_error": self._last_error,
         }

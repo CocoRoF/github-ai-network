@@ -7,7 +7,7 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - CRAWLER_AUTO_START=${CRAWLER_AUTO_START:-false}
       - CRAWLER_DELAY=${CRAWLER_DELAY:-2.0}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:58440}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:58440,https://ai-network.hrletsgo.me}
     depends_on:
       db:
         condition: service_healthy

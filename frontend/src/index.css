@@ -310,6 +310,17 @@ input[type="checkbox"] {
   font-size: 12px;
   color: var(--text-secondary);
 }
+.crawler-error {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: 6px;
+  color: var(--red);
+  font-size: 12px;
+  word-break: break-all;
+  line-height: 1.4;
+}
 
 /* node detail */
 .node-detail {
