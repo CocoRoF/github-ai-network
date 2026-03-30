@@ -1,32 +1,43 @@
-from sqlalchemy import select
+from sqlalchemy import select, text, bindparam
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Author, Repository, Topic, RepoTopic, RepoContributor
+from app.models import (
+    Author, Repository, Topic, RepoTopic, RepoContributor,
+    SessionRepository,
+)
 
 
-def _repo_node(repo: Repository) -> dict:
-    return {
+def _repo_node(repo: Repository, compact: bool = False) -> dict:
+    node = {
         "id": f"repo:{repo.id}",
         "type": "repo",
         "label": repo.full_name,
         "val": max(1, (repo.stars or 0) ** 0.5),
-        "stars": repo.stars,
-        "language": repo.language,
-        "description": repo.description,
-        "url": f"https://github.com/{repo.full_name}",
     }
+    if not compact:
+        node.update({
+            "stars": repo.stars,
+            "language": repo.language,
+            "description": repo.description,
+            "url": f"https://github.com/{repo.full_name}",
+        })
+    return node
 
 
-def _author_node(author: Author) -> dict:
-    return {
+def _author_node(author: Author, compact: bool = False) -> dict:
+    node = {
         "id": f"author:{author.id}",
         "type": "author",
         "label": author.login,
         "val": max(1, (author.followers or 0) ** 0.4),
-        "followers": author.followers,
-        "avatar_url": author.avatar_url,
-        "url": f"https://github.com/{author.login}",
     }
+    if not compact:
+        node.update({
+            "followers": author.followers,
+            "avatar_url": author.avatar_url,
+            "url": f"https://github.com/{author.login}",
+        })
+    return node
 
 
 def _topic_node(topic: Topic, repo_count: int = 1) -> dict:
@@ -48,6 +59,9 @@ class GraphBuilder:
         min_stars: int = 0,
         node_types: list[str] | None = None,
         search: str | None = None,
+        session_id: int | None = None,
+        language: str | None = None,
+        compact: bool = False,
     ) -> dict:
         if node_types is None:
             node_types = ["author", "repo", "topic"]
@@ -55,6 +69,7 @@ class GraphBuilder:
         nodes: list[dict] = []
         links: list[dict] = []
         node_ids: set[str] = set()
+        own_link_keys: set[tuple[str, str]] = set()
 
         # ── repos ─────────────────────────────────────────
         query = select(Repository).order_by(Repository.stars.desc())
@@ -66,6 +81,16 @@ class GraphBuilder:
                 Repository.full_name.ilike(pattern)
                 | Repository.description.ilike(pattern)
             )
+        if language:
+            query = query.where(Repository.language == language)
+        if session_id:
+            query = query.where(
+                Repository.id.in_(
+                    select(SessionRepository.repository_id).where(
+                        SessionRepository.session_id == session_id
+                    )
+                )
+            )
         query = query.limit(limit)
 
         repos = (await session.execute(query)).scalars().all()
@@ -74,7 +99,7 @@ class GraphBuilder:
 
         if "repo" in node_types:
             for r in repos:
-                nodes.append(_repo_node(r))
+                nodes.append(_repo_node(r, compact))
                 node_ids.add(f"repo:{r.id}")
                 repo_ids.add(r.id)
                 if r.owner_id:
@@ -88,16 +113,15 @@ class GraphBuilder:
 
             for a in authors:
                 nid = f"author:{a.id}"
-                nodes.append(_author_node(a))
+                nodes.append(_author_node(a, compact))
                 node_ids.add(nid)
 
             for r in repos:
                 if r.owner_id and f"author:{r.owner_id}" in node_ids:
-                    links.append({
-                        "source": f"author:{r.owner_id}",
-                        "target": f"repo:{r.id}",
-                        "type": "owns",
-                    })
+                    src = f"author:{r.owner_id}"
+                    tgt = f"repo:{r.id}"
+                    links.append({"source": src, "target": tgt, "type": "owns"})
+                    own_link_keys.add((src, tgt))
 
         # ── topics ────────────────────────────────────────
         if "topic" in node_types and repo_ids:
@@ -131,7 +155,8 @@ class GraphBuilder:
                     if src in node_ids and tgt in node_ids:
                         links.append({"source": src, "target": tgt, "type": "has_topic"})
 
-        # ── contributor edges (only between existing nodes) ──
+        # ── contributor edges (with weight) ───────────────
+        author_db_ids: list[int] = []
         if "author" in node_types and repo_ids:
             author_db_ids = [
                 int(nid.split(":")[1]) for nid in node_ids if nid.startswith("author:")
@@ -150,16 +175,59 @@ class GraphBuilder:
                     src = f"author:{c.author_id}"
                     tgt = f"repo:{c.repository_id}"
                     if src in node_ids and tgt in node_ids:
-                        existing_own = any(
-                            l["source"] == src and l["target"] == tgt and l["type"] == "owns"
-                            for l in links
-                        )
-                        if not existing_own:
+                        if (src, tgt) not in own_link_keys:
                             links.append({
                                 "source": src,
                                 "target": tgt,
                                 "type": "contributes",
+                                "weight": min(c.contributions / 100, 3) if c.contributions else 0.5,
                             })
+
+        # ── fork links ────────────────────────────────────
+        if "repo" in node_types:
+            for r in repos:
+                if r.fork_source_id and f"repo:{r.fork_source_id}" in node_ids:
+                    links.append({
+                        "source": f"repo:{r.id}",
+                        "target": f"repo:{r.fork_source_id}",
+                        "type": "forked_from",
+                    })
+
+        # ── co-worker links (SQL aggregate) ───────────────
+        if "author" in node_types and len(author_db_ids) > 1:
+            coworker_sql = text("""
+                SELECT a1.author_id AS aid1, a2.author_id AS aid2, COUNT(*) AS shared
+                FROM repo_contributors a1
+                JOIN repo_contributors a2
+                  ON a1.repository_id = a2.repository_id AND a1.author_id < a2.author_id
+                WHERE a1.author_id IN :ids AND a2.author_id IN :ids
+                GROUP BY a1.author_id, a2.author_id
+                HAVING COUNT(*) >= 2
+            """).bindparams(bindparam("ids", expanding=True))
+            coworker_result = await session.execute(
+                coworker_sql, {"ids": author_db_ids}
+            )
+            for row in coworker_result:
+                src = f"author:{row.aid1}"
+                tgt = f"author:{row.aid2}"
+                if src in node_ids and tgt in node_ids:
+                    links.append({
+                        "source": src,
+                        "target": tgt,
+                        "type": "coworker",
+                        "weight": min(row.shared / 3, 3),
+                    })
+
+        # ── connection count → val boost ──────────────────
+        for node in nodes:
+            connection_count = sum(
+                1 for l in links
+                if l["source"] == node["id"] or l["target"] == node["id"]
+            )
+            node["val"] = node["val"] + connection_count * 0.3
+            # repo nodes 1.15x
+            if node["type"] == "repo":
+                node["val"] *= 1.15
 
         return {
             "nodes": nodes,
@@ -198,7 +266,6 @@ class GraphBuilder:
             nodes.append(_repo_node(repo))
             node_ids.add(f"repo:{repo.id}")
 
-            # owner
             if repo.owner_id:
                 owner = (
                     await session.execute(select(Author).where(Author.id == repo.owner_id))
@@ -212,7 +279,6 @@ class GraphBuilder:
                         "type": "owns",
                     })
 
-            # topics
             rows = (
                 await session.execute(
                     select(RepoTopic, Topic)
@@ -231,7 +297,6 @@ class GraphBuilder:
                     "type": "has_topic",
                 })
 
-            # contributors
             rows = (
                 await session.execute(
                     select(RepoContributor, Author)
@@ -248,7 +313,24 @@ class GraphBuilder:
                     "source": aid,
                     "target": f"repo:{repo.id}",
                     "type": "contributes",
+                    "weight": min(contrib.contributions / 100, 3) if contrib.contributions else 0.5,
                 })
+
+            # fork parent
+            if repo.fork_source_id:
+                parent = (
+                    await session.execute(select(Repository).where(Repository.id == repo.fork_source_id))
+                ).scalar_one_or_none()
+                if parent:
+                    pid = f"repo:{parent.id}"
+                    if pid not in node_ids:
+                        nodes.append(_repo_node(parent))
+                        node_ids.add(pid)
+                    links.append({
+                        "source": f"repo:{repo.id}",
+                        "target": pid,
+                        "type": "forked_from",
+                    })
 
         elif node_type == "author":
             author = (
@@ -296,6 +378,7 @@ class GraphBuilder:
                     "source": f"author:{author.id}",
                     "target": rid,
                     "type": "contributes",
+                    "weight": min(contrib.contributions / 100, 3) if contrib.contributions else 0.5,
                 })
 
         elif node_type == "topic":

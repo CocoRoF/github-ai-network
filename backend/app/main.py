@@ -7,7 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db
 from app.api.routes import router
-from app.crawler.crawler import GitHubCrawler
+from app.api.admin import admin_router
+from app.crawler.crawler import CrawlerManager
+from app.graph.cache import graph_cache
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,20 +17,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-crawler = GitHubCrawler()
+crawler = CrawlerManager()
+crawler._invalidate_cache_fn = graph_cache.invalidate
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing database …")
     await init_db()
-
-    if settings.crawler_auto_start and settings.github_token:
-        logger.info("Auto-starting crawler …")
-        await crawler.start()
-
     yield
-
     logger.info("Shutting down …")
     await crawler.close()
 
@@ -44,4 +41,6 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+app.include_router(admin_router)
 app.state.crawler = crawler
+app.state.graph_cache = graph_cache

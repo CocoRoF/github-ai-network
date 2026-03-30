@@ -3,10 +3,12 @@ export default function Sidebar({
   crawlerStatus,
   filters,
   onFiltersChange,
-  onCrawlerToggle,
   selectedNode,
   onExpandNode,
   onRefresh,
+  sessions,
+  selectedSession,
+  onSessionChange,
 }) {
   return (
     <aside className="sidebar">
@@ -27,6 +29,33 @@ export default function Sidebar({
             <span className="stat-label">Topics</span>
           </div>
         </div>
+      </div>
+
+      {/* ── Session Selector ──────────────────────────── */}
+      <div className="sidebar-section">
+        <h3>Session</h3>
+        <select
+          className="session-select"
+          value={selectedSession || ""}
+          onChange={(e) =>
+            onSessionChange(e.target.value ? Number(e.target.value) : null)
+          }
+        >
+          <option value="">All Sessions</option>
+          {sessions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name} ({s.total_repos} repos)
+            </option>
+          ))}
+        </select>
+        {crawlerStatus.worker_running && (
+          <div className="crawler-mini-status">
+            <span className="status-running">● Crawler active</span>
+            <span className="crawler-mini-detail">
+              {crawlerStatus.tasks_pending ?? 0} pending
+            </span>
+          </div>
+        )}
       </div>
 
       {/* ── Filters ───────────────────────────────────── */}
@@ -51,6 +80,40 @@ export default function Sidebar({
               {t.charAt(0).toUpperCase() + t.slice(1)}
             </label>
           ))}
+        </div>
+
+        <div className="filter-group">
+          <label>Language</label>
+          <select
+            className="session-select"
+            value={filters.language}
+            onChange={(e) =>
+              onFiltersChange({ ...filters, language: e.target.value })
+            }
+          >
+            <option value="">All Languages</option>
+            {[
+              "Python",
+              "JavaScript",
+              "TypeScript",
+              "C++",
+              "Java",
+              "Rust",
+              "Go",
+              "Jupyter Notebook",
+              "C",
+              "Swift",
+              "Kotlin",
+              "Ruby",
+              "Scala",
+              "R",
+              "Julia",
+            ].map((lang) => (
+              <option key={lang} value={lang}>
+                {lang}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="filter-group">
@@ -86,37 +149,6 @@ export default function Sidebar({
         </button>
       </div>
 
-      {/* ── Crawler ───────────────────────────────────── */}
-      <div className="sidebar-section">
-        <h3>Crawler</h3>
-        <div className="crawler-info">
-          <div
-            className={`crawler-status ${
-              crawlerStatus.running ? "status-running" : "status-stopped"
-            }`}
-          >
-            {crawlerStatus.running ? "● Running" : "○ Stopped"}
-          </div>
-          <div className="crawler-stats">
-            <span>Repos: {crawlerStatus.total_repos ?? "–"}</span>
-            <span>Authors: {crawlerStatus.total_authors ?? "–"}</span>
-            <span>Topics: {crawlerStatus.total_topics ?? "–"}</span>
-            <span>Pending tasks: {crawlerStatus.tasks_pending ?? "–"}</span>
-            <span>Done tasks: {crawlerStatus.tasks_done ?? "–"}</span>
-            <span>Errors: {crawlerStatus.tasks_errors ?? "–"}</span>
-            <span>
-              API remaining: {crawlerStatus.rate_limit_remaining ?? "–"}
-            </span>
-          </div>
-          {crawlerStatus.last_error && (
-            <div className="crawler-error">{crawlerStatus.last_error}</div>
-          )}
-          <button className="btn btn-crawler" onClick={onCrawlerToggle}>
-            {crawlerStatus.running ? "Stop Crawler" : "Start Crawler"}
-          </button>
-        </div>
-      </div>
-
       {/* ── Selected Node ─────────────────────────────── */}
       {selectedNode && (
         <div className="sidebar-section">
@@ -141,6 +173,9 @@ export default function Sidebar({
               )}
               {selectedNode.repo_count != null && (
                 <span>📦 {selectedNode.repo_count} repos</span>
+              )}
+              {selectedNode.company && (
+                <span>🏢 {selectedNode.company}</span>
               )}
             </div>
             <div className="node-actions">
@@ -201,6 +236,20 @@ export default function Sidebar({
               style={{ borderColor: "#d29922" }}
             />
             Has Topic
+          </div>
+          <div className="legend-line">
+            <span
+              className="legend-line-sample"
+              style={{ borderColor: "#da70d6" }}
+            />
+            Co-worker
+          </div>
+          <div className="legend-line">
+            <span
+              className="legend-line-sample legend-dashed"
+              style={{ borderColor: "#8888cc" }}
+            />
+            Forked From
           </div>
         </div>
       </div>

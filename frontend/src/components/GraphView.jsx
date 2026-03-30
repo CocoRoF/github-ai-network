@@ -11,6 +11,8 @@ const LINK_COLORS = {
   owns: "rgba(88,166,255,0.35)",
   contributes: "rgba(139,148,158,0.25)",
   has_topic: "rgba(210,153,34,0.25)",
+  coworker: "rgba(218,112,214,0.30)",
+  forked_from: "rgba(136,136,204,0.30)",
 };
 
 export default function GraphView({
@@ -21,7 +23,7 @@ export default function GraphView({
 }) {
   const paintNode = useCallback(
     (node, ctx, globalScale) => {
-      const r = Math.max(Math.sqrt(node.val || 1) * 2, 3);
+      let r = Math.max(Math.sqrt(node.val || 1) * 2, 3);
       const color = NODE_COLORS[node.type] || "#8b949e";
 
       /* circle */
@@ -71,6 +73,16 @@ export default function GraphView({
     []
   );
 
+  const linkWidth = useCallback(
+    (link) => link.weight || 0.5,
+    []
+  );
+
+  const linkDash = useCallback(
+    (link) => link.type === "forked_from" ? [4, 2] : null,
+    []
+  );
+
   return (
     <ForceGraph2D
       ref={graphRef}
@@ -78,7 +90,8 @@ export default function GraphView({
       nodeCanvasObject={paintNode}
       nodePointerAreaPaint={paintArea}
       linkColor={linkColor}
-      linkWidth={0.5}
+      linkWidth={linkWidth}
+      linkLineDash={linkDash}
       onNodeClick={onNodeClick}
       backgroundColor="#0d1117"
       cooldownTicks={100}

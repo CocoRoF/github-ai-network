@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     crawler_delay: float = 2.0
     crawler_batch_size: int = 10
     crawler_auto_start: bool = False
+    admin_password: str = "admin123"
+    graph_cache_ttl: int = 30
     cors_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost,http://localhost:58440,https://ai-network.hrletsgo.me"
 
     @property

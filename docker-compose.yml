@@ -7,6 +7,8 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - CRAWLER_AUTO_START=${CRAWLER_AUTO_START:-false}
       - CRAWLER_DELAY=${CRAWLER_DELAY:-2.0}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - GRAPH_CACHE_TTL=${GRAPH_CACHE_TTL:-30}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:58440,https://ai-network.hrletsgo.me}
     depends_on:
       db:
