@@ -259,6 +259,14 @@ body {
   color: var(--text-secondary);
   margin-bottom: 6px;
 }
+.range-pair {
+  display: flex;
+  gap: 6px;
+}
+.range-pair input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
 .checkbox-label {
   display: flex;
   align-items: center;

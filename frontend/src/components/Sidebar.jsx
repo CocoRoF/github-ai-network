@@ -9,6 +9,8 @@ export default function Sidebar({
   sessions,
   selectedSession,
   onSessionChange,
+  graphStyle,
+  onStyleChange,
 }) {
   return (
     <aside className="sidebar">
@@ -199,6 +201,111 @@ export default function Sidebar({
           </div>
         </div>
       )}
+
+      {/* ── Appearance (Gephi-style) ────────────────────── */}
+      <div className="sidebar-section">
+        <h3>Appearance</h3>
+
+        <div className="filter-group">
+          <label>Node Size: {graphStyle.nodeMinSize}–{graphStyle.nodeMaxSize}px</label>
+          <div className="range-pair">
+            <input
+              type="range"
+              min={1}
+              max={10}
+              step={0.5}
+              value={graphStyle.nodeMinSize}
+              onChange={(e) =>
+                onStyleChange({ ...graphStyle, nodeMinSize: +e.target.value })
+              }
+              title="Min size"
+            />
+            <input
+              type="range"
+              min={5}
+              max={40}
+              step={1}
+              value={graphStyle.nodeMaxSize}
+              onChange={(e) =>
+                onStyleChange({ ...graphStyle, nodeMaxSize: +e.target.value })
+              }
+              title="Max size"
+            />
+          </div>
+        </div>
+
+        <div className="filter-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={graphStyle.showLabels}
+              onChange={(e) =>
+                onStyleChange({ ...graphStyle, showLabels: e.target.checked })
+              }
+            />
+            Show Labels
+          </label>
+        </div>
+
+        {graphStyle.showLabels && (
+          <>
+            <div className="filter-group">
+              <label>Label Size: {graphStyle.labelScale.toFixed(1)}x</label>
+              <input
+                type="range"
+                min={0.3}
+                max={3.0}
+                step={0.1}
+                value={graphStyle.labelScale}
+                onChange={(e) =>
+                  onStyleChange({ ...graphStyle, labelScale: +e.target.value })
+                }
+              />
+            </div>
+            <div className="filter-group">
+              <label>Label Zoom Threshold: {graphStyle.labelThreshold.toFixed(1)}</label>
+              <input
+                type="range"
+                min={0.1}
+                max={3.0}
+                step={0.1}
+                value={graphStyle.labelThreshold}
+                onChange={(e) =>
+                  onStyleChange({ ...graphStyle, labelThreshold: +e.target.value })
+                }
+              />
+            </div>
+          </>
+        )}
+
+        <div className="filter-group">
+          <label>Edge Opacity: {Math.round(graphStyle.edgeOpacity * 100)}%</label>
+          <input
+            type="range"
+            min={0.05}
+            max={1.0}
+            step={0.05}
+            value={graphStyle.edgeOpacity}
+            onChange={(e) =>
+              onStyleChange({ ...graphStyle, edgeOpacity: +e.target.value })
+            }
+          />
+        </div>
+
+        <div className="filter-group">
+          <label>Edge Width: {graphStyle.edgeWidthScale.toFixed(1)}x</label>
+          <input
+            type="range"
+            min={0.1}
+            max={3.0}
+            step={0.1}
+            value={graphStyle.edgeWidthScale}
+            onChange={(e) =>
+              onStyleChange({ ...graphStyle, edgeWidthScale: +e.target.value })
+            }
+          />
+        </div>
+      </div>
 
       {/* ── Legend ─────────────────────────────────────── */}
       <div className="sidebar-section">

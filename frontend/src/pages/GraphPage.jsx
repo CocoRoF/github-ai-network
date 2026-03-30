@@ -20,6 +20,15 @@ export default function GraphPage() {
   const [crawlerStatus, setCrawlerStatus] = useState({});
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState({});
+  const [graphStyle, setGraphStyle] = useState({
+    nodeMinSize: 2,
+    nodeMaxSize: 20,
+    labelScale: 1.0,
+    labelThreshold: 0.8,
+    showLabels: true,
+    edgeOpacity: 0.35,
+    edgeWidthScale: 1.0,
+  });
   const graphRef = useRef();
   const searchTimeout = useRef(null);
 
@@ -215,6 +224,8 @@ export default function GraphPage() {
           sessions={sessions}
           selectedSession={selectedSession}
           onSessionChange={setSelectedSession}
+          graphStyle={graphStyle}
+          onStyleChange={setGraphStyle}
         />
         <div className="graph-container">
           {graphData.nodes.length === 0 && !loading ? (
@@ -235,6 +246,7 @@ export default function GraphPage() {
               onNodeClick={handleNodeClick}
               selectedNode={selectedNode}
               graphRef={graphRef}
+              graphStyle={graphStyle}
             />
           )}
         </div>

@@ -218,16 +218,18 @@ class GraphBuilder:
                         "weight": min(row.shared / 3, 3),
                     })
 
-        # ── connection count → val boost ──────────────────
+        # ── connection count → val boost (log-dampened) ────
+        connection_map: dict[str, int] = {}
+        for l in links:
+            connection_map[l["source"]] = connection_map.get(l["source"], 0) + 1
+            connection_map[l["target"]] = connection_map.get(l["target"], 0) + 1
+
+        import math
         for node in nodes:
-            connection_count = sum(
-                1 for l in links
-                if l["source"] == node["id"] or l["target"] == node["id"]
-            )
-            node["val"] = node["val"] + connection_count * 0.3
-            # repo nodes 1.15x
-            if node["type"] == "repo":
-                node["val"] *= 1.15
+            cc = connection_map.get(node["id"], 0)
+            if cc > 0:
+                node["val"] = node["val"] + math.log2(1 + cc) * 0.5
+            node["connections"] = cc
 
         return {
             "nodes": nodes,
