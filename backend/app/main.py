@@ -25,6 +25,8 @@ crawler._invalidate_cache_fn = graph_cache.invalidate
 async def lifespan(app: FastAPI):
     logger.info("Initializing database …")
     await init_db()
+    logger.info("Checking for sessions to auto-resume …")
+    await crawler.auto_resume()
     yield
     logger.info("Shutting down …")
     await crawler.close()

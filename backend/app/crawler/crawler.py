@@ -1,5 +1,8 @@
 import asyncio
+import json
 import logging
+import time
+from collections import deque
 from datetime import datetime, timezone
 
 from sqlalchemy import select, func, update
@@ -9,6 +12,7 @@ from app.database import async_session_factory
 from app.models import (
     Author, Repository, Topic, RepoTopic, RepoContributor,
     CrawlTask, CrawlSession, SessionRepository, SessionAuthor,
+    CrawlLog,
 )
 from app.crawler.github_client import GitHubClient
 from app.crawler.seeds import AI_TOPICS, AI_KEYWORDS
@@ -19,15 +23,96 @@ logger = logging.getLogger(__name__)
 class CrawlerManager:
     """Manages multiple crawl sessions with a single worker."""
 
+    MAX_LOG_BUFFER = 200  # keep last N log entries in memory for fast access
+
     def __init__(self):
         self.client = GitHubClient()
         self._worker: asyncio.Task | None = None
         self._last_error: str | None = None
         self._invalidate_cache_fn = None  # set by main.py
 
+        # ── observability state ───────────────────────
+        self._heartbeat_at: float = 0.0           # last worker activity (time.time())
+        self._started_at: float | None = None      # worker start time
+        self._current_task: dict | None = None     # {id, type, target, session_id, started_at}
+        self._tasks_completed_times: deque = deque(maxlen=60)  # timestamps of last 60 completions
+        self._log_buffer: deque = deque(maxlen=self.MAX_LOG_BUFFER)
+
+        # wire up GitHubClient callbacks
+        self.client._on_rate_limit_wait = self._on_rate_limit_wait
+        self.client._on_rate_limit_resume = self._on_rate_limit_resume
+        self.client._on_api_error = self._on_api_error
+
     @property
     def worker_running(self) -> bool:
         return self._worker is not None and not self._worker.done()
+
+    @property
+    def tasks_per_minute(self) -> float:
+        now = time.time()
+        cutoff = now - 300  # 5-minute window
+        recent = [t for t in self._tasks_completed_times if t > cutoff]
+        if len(recent) < 2:
+            return 0.0
+        span = now - recent[0]
+        return (len(recent) / span) * 60.0 if span > 0 else 0.0
+
+    # ── event logging ─────────────────────────────────────
+
+    async def _log_event(
+        self, event_type: str, message: str,
+        level: str = "info", session_id: int | None = None,
+        metadata: dict | None = None,
+    ):
+        """Write an event to DB and in-memory buffer."""
+        entry = {
+            "session_id": session_id,
+            "level": level,
+            "event_type": event_type,
+            "message": message,
+            "metadata": metadata,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._log_buffer.append(entry)
+
+        try:
+            async with async_session_factory() as session:
+                session.add(CrawlLog(
+                    session_id=session_id,
+                    level=level,
+                    event_type=event_type,
+                    message=message,
+                    metadata_json=json.dumps(metadata) if metadata else None,
+                ))
+                await session.commit()
+        except Exception as exc:
+            logger.error("Failed to write crawl log: %s", exc)
+
+    async def _on_rate_limit_wait(self, remaining: int, wait_secs: float):
+        await self._log_event(
+            "rate_limit_wait",
+            f"Rate limit: {remaining} remaining, waiting {wait_secs:.0f}s",
+            level="warning",
+            session_id=self._current_task["session_id"] if self._current_task else None,
+            metadata={"remaining": remaining, "wait_seconds": round(wait_secs)},
+        )
+
+    async def _on_rate_limit_resume(self):
+        await self._log_event(
+            "rate_limit_resume",
+            "Rate limit wait ended, resuming",
+            level="info",
+            session_id=self._current_task["session_id"] if self._current_task else None,
+        )
+
+    async def _on_api_error(self, url: str, status_code: int, detail: str):
+        await self._log_event(
+            "api_error",
+            f"API error {status_code} on {url}: {detail[:200]}",
+            level="error",
+            session_id=self._current_task["session_id"] if self._current_task else None,
+            metadata={"url": url, "status_code": status_code},
+        )
 
     # ── session management ────────────────────────────────
 
@@ -67,6 +152,11 @@ class CrawlerManager:
             await session.refresh(cs)
             logger.info("Created session %d: %s (%s: %s)", cs.id, name, seed_type, seed_value)
 
+        await self._log_event(
+            "session_start", f"Session created and started: {name}",
+            session_id=cs.id,
+            metadata={"seed_type": seed_type, "seed_value": seed_value},
+        )
         self._ensure_worker()
         return cs
 
@@ -77,6 +167,10 @@ class CrawlerManager:
                 cs.status = "running"
                 cs.paused_at = None
                 await session.commit()
+        await self._log_event(
+            "session_resume", "Session resumed",
+            session_id=session_id,
+        )
         self._ensure_worker()
 
     async def pause_session(self, session_id: int):
@@ -86,6 +180,10 @@ class CrawlerManager:
                 cs.status = "paused"
                 cs.paused_at = datetime.now(timezone.utc)
                 await session.commit()
+        await self._log_event(
+            "session_pause", "Session paused",
+            session_id=session_id,
+        )
 
     async def delete_session(self, session_id: int):
         async with async_session_factory() as session:
@@ -169,17 +267,35 @@ class CrawlerManager:
         if not self.worker_running:
             self._worker = asyncio.create_task(self._run())
             self._worker.add_done_callback(self._on_worker_done)
+            self._started_at = time.time()
+            self._heartbeat_at = time.time()
             logger.info("Worker started")
+            asyncio.create_task(self._log_event("worker_start", "Worker started"))
 
     def _on_worker_done(self, task: asyncio.Task):
+        self._current_task = None
+        self._started_at = None
         if task.cancelled():
             logger.info("Worker cancelled")
+            asyncio.get_event_loop().create_task(
+                self._log_event("worker_stop", "Worker cancelled")
+            )
         elif task.exception():
             exc = task.exception()
             self._last_error = f"Worker crashed: {exc}"
             logger.error("Worker crashed: %s", exc, exc_info=exc)
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(
+                    self._log_event("worker_crash", f"Worker crashed: {exc}", level="error")
+                )
+            except RuntimeError:
+                pass
         else:
             logger.info("Worker finished (no more tasks)")
+            asyncio.get_event_loop().create_task(
+                self._log_event("worker_stop", "Worker finished — no more tasks")
+            )
 
     async def stop_worker(self):
         if self._worker:
@@ -199,10 +315,12 @@ class CrawlerManager:
 
     async def _run(self):
         while True:
+            self._heartbeat_at = time.time()
             try:
                 async with async_session_factory() as session:
                     task = await self._next_task(session)
                     if task is None:
+                        self._current_task = None
                         # check if any sessions are still running
                         running = (await session.execute(
                             select(func.count(CrawlSession.id)).where(
@@ -217,10 +335,27 @@ class CrawlerManager:
                         continue
 
                     session_id = task.session_id
+                    task_start = time.time()
+                    self._current_task = {
+                        "id": task.id,
+                        "type": task.task_type,
+                        "target": task.target,
+                        "session_id": session_id,
+                        "started_at": datetime.now(timezone.utc).isoformat(),
+                    }
+
+                    await self._log_event(
+                        "task_start",
+                        f"[{task.task_type}] {task.target}",
+                        session_id=session_id,
+                        metadata={"task_id": task.id, "depth": task.depth},
+                    )
+
                     try:
                         count = await self._process(session, task)
                         task.status = "done"
                         task.result_count = count
+                        duration = round(time.time() - task_start, 2)
                         # update session counters
                         await session.execute(
                             update(CrawlSession)
@@ -231,12 +366,21 @@ class CrawlerManager:
                             )
                         )
                         logger.info(
-                            "Task %d [%s] session=%d done — %d items",
-                            task.id, task.task_type, session_id, count,
+                            "Task %d [%s] session=%d done — %d items (%.1fs)",
+                            task.id, task.task_type, session_id, count, duration,
+                        )
+                        self._tasks_completed_times.append(time.time())
+
+                        await self._log_event(
+                            "task_done",
+                            f"[{task.task_type}] {task.target} → {count} items ({duration}s)",
+                            session_id=session_id,
+                            metadata={"task_id": task.id, "result_count": count, "duration": duration},
                         )
                     except Exception as exc:
                         task.status = "error"
                         task.error_message = str(exc)[:500]
+                        duration = round(time.time() - task_start, 2)
                         self._last_error = f"Task {task.id} [{task.task_type}]: {exc}"
                         await session.execute(
                             update(CrawlSession)
@@ -250,8 +394,16 @@ class CrawlerManager:
                             "Task %d [%s] error: %s",
                             task.id, task.task_type, exc, exc_info=True,
                         )
+                        await self._log_event(
+                            "task_error",
+                            f"[{task.task_type}] {task.target}: {str(exc)[:300]}",
+                            level="error",
+                            session_id=session_id,
+                            metadata={"task_id": task.id, "error": str(exc)[:500], "duration": duration},
+                        )
 
                     task.processed_at = datetime.now(timezone.utc)
+                    self._current_task = None
                     await session.commit()
 
                     if self._invalidate_cache_fn:
@@ -261,7 +413,12 @@ class CrawlerManager:
                 raise
             except Exception as exc:
                 self._last_error = f"Loop error: {exc}"
+                self._current_task = None
                 logger.error("Worker loop error: %s", exc, exc_info=True)
+                await self._log_event(
+                    "worker_crash", f"Worker loop error: {exc}",
+                    level="error",
+                )
                 await asyncio.sleep(10)
 
     # ── task helpers ──────────────────────────────────────
@@ -675,8 +832,17 @@ class CrawlerManager:
         tasks_done = sum(s["tasks_done"] for s in sessions)
         tasks_errors = sum(s["tasks_errors"] for s in sessions)
 
+        now = time.time()
+        heartbeat_ago = round(now - self._heartbeat_at, 1) if self._heartbeat_at else None
+        uptime = round(now - self._started_at, 1) if self._started_at else None
+
         return {
             "worker_running": self.worker_running,
+            "worker_healthy": self.worker_running and (heartbeat_ago is not None and heartbeat_ago < 60),
+            "heartbeat_seconds_ago": heartbeat_ago,
+            "worker_uptime_seconds": uptime,
+            "current_task": self._current_task,
+            "tasks_per_minute": round(self.tasks_per_minute, 2),
             "sessions": len(sessions),
             "running_sessions": sum(1 for s in sessions if s["status"] == "running"),
             "total_repos": total_repos,
@@ -685,5 +851,75 @@ class CrawlerManager:
             "tasks_done": tasks_done,
             "tasks_errors": tasks_errors,
             "rate_limit_remaining": self.client.rate_limit_remaining,
+            "rate_limit_limit": self.client.rate_limit_limit,
+            "rate_limit_reset": self.client.rate_limit_reset_dt.isoformat() if self.client.rate_limit_reset_dt else None,
+            "rate_limit_waiting": self.client.rate_limit_waiting,
+            "total_api_calls": self.client.total_api_calls,
             "last_error": self._last_error,
         }
+
+    # ── auto-resume on startup ────────────────────────────
+
+    async def auto_resume(self):
+        """Check for sessions that were 'running' before shutdown and resume the worker."""
+        async with async_session_factory() as session:
+            running = (await session.execute(
+                select(func.count(CrawlSession.id)).where(
+                    CrawlSession.status == "running"
+                )
+            )).scalar() or 0
+
+            # also check for stale 'processing' tasks → reset to 'pending'
+            stale = (await session.execute(
+                select(CrawlTask).where(CrawlTask.status == "processing")
+            )).scalars().all()
+            for t in stale:
+                t.status = "pending"
+                logger.info("Reset stale processing task %d to pending", t.id)
+            if stale:
+                await session.commit()
+
+        if running > 0:
+            logger.info("Auto-resuming: %d running sessions found", running)
+            await self._log_event(
+                "worker_start",
+                f"Auto-resume: {running} running session(s) found after restart",
+                metadata={"running_sessions": running, "stale_tasks_reset": len(stale)},
+            )
+            self._ensure_worker()
+        else:
+            logger.info("No running sessions to auto-resume")
+
+    # ── log retrieval ─────────────────────────────────────
+
+    async def get_logs(
+        self, session_id: int | None = None,
+        level: str | None = None,
+        limit: int = 100, offset: int = 0,
+    ) -> list[dict]:
+        async with async_session_factory() as db:
+            q = select(CrawlLog)
+            if session_id is not None:
+                q = q.where(CrawlLog.session_id == session_id)
+            if level:
+                q = q.where(CrawlLog.level == level)
+            q = q.order_by(CrawlLog.created_at.desc()).limit(limit).offset(offset)
+            result = await db.execute(q)
+            return [
+                {
+                    "id": log.id,
+                    "session_id": log.session_id,
+                    "level": log.level,
+                    "event_type": log.event_type,
+                    "message": log.message,
+                    "metadata": json.loads(log.metadata_json) if log.metadata_json else None,
+                    "created_at": log.created_at.isoformat() if log.created_at else None,
+                }
+                for log in result.scalars().all()
+            ]
+
+    def get_recent_logs(self, limit: int = 50) -> list[dict]:
+        """Get recent logs from in-memory buffer (fast, no DB hit)."""
+        items = list(self._log_buffer)
+        items.reverse()
+        return items[:limit]

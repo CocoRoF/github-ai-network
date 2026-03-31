@@ -187,3 +187,32 @@ class CrawlTask(Base):
     processed_at = Column(DateTime(timezone=True), nullable=True)
 
     session = relationship("CrawlSession", back_populates="tasks")
+
+
+# ── Crawl Log (event-based activity log) ─────────────────
+
+class CrawlLog(Base):
+    __tablename__ = "crawl_logs"
+    __table_args__ = (
+        Index("ix_crawl_logs_session", "session_id"),
+        Index("ix_crawl_logs_created", "created_at"),
+        Index("ix_crawl_logs_level", "level"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(Integer, ForeignKey("crawl_sessions.id", ondelete="CASCADE"), nullable=True)
+    level = Column(String(20), nullable=False, default="info")          # info | warning | error
+    event_type = Column(String(50), nullable=False)                      # see EVENT_TYPES below
+    message = Column(Text, nullable=False)
+    metadata_json = Column(Text, nullable=True)                          # JSON blob for extra data
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    session = relationship("CrawlSession")
+
+
+# Event types:
+# worker_start, worker_stop, worker_crash, worker_heartbeat
+# session_start, session_pause, session_resume, session_delete
+# task_start, task_done, task_error
+# rate_limit_wait, rate_limit_resume
+# api_error, api_retry

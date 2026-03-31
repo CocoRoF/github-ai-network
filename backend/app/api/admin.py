@@ -100,9 +100,47 @@ async def get_session_tasks(
     return await crawler.get_session_tasks(session_id, status=status, limit=limit, offset=offset)
 
 
+# ── session logs ─────────────────────────────────────────
+
+@admin_router.get("/sessions/{session_id}/logs")
+async def get_session_logs(
+    session_id: int,
+    request: Request,
+    _=Depends(require_admin),
+    level: str = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    crawler = _get_crawler(request)
+    return await crawler.get_logs(session_id=session_id, level=level, limit=limit, offset=offset)
+
+
 # ── crawler control ──────────────────────────────────────
 
 @admin_router.get("/crawler/status")
 async def crawler_status(request: Request, _=Depends(require_admin)):
     crawler = _get_crawler(request)
     return await crawler.get_status()
+
+
+@admin_router.get("/crawler/logs")
+async def crawler_logs(
+    request: Request,
+    _=Depends(require_admin),
+    level: str = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    crawler = _get_crawler(request)
+    return await crawler.get_logs(level=level, limit=limit, offset=offset)
+
+
+@admin_router.get("/crawler/logs/recent")
+async def crawler_recent_logs(
+    request: Request,
+    _=Depends(require_admin),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """Fast in-memory log retrieval (no DB hit)."""
+    crawler = _get_crawler(request)
+    return crawler.get_recent_logs(limit=limit)
