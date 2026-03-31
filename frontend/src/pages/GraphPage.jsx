@@ -86,8 +86,22 @@ export default function GraphPage() {
   }, [fetchCrawler, crawlerStatus.worker_running]);
 
   /* ── node interaction ─────────────────────────────── */
+  const focusNode = useCallback(
+    (node) => {
+      if (node && graphRef.current && node.x != null) {
+        graphRef.current.centerAt(node.x, node.y, 600);
+        graphRef.current.zoom(3, 600);
+      }
+    },
+    [graphRef]
+  );
+
   const handleNodeClick = async (node) => {
-    // fetch full detail for clicked node
+    if (!node) {
+      setSelectedNode(null);
+      return;
+    }
+    focusNode(node);
     try {
       const r = await fetch(`${API}/graph/node/${encodeURIComponent(node.id)}`);
       const detail = await r.json();
@@ -231,16 +245,11 @@ export default function GraphPage() {
             graphStyle={graphStyle}
             onStyleChange={setGraphStyle}
             onStatsClick={() => setShowStatsModal(true)}
+            sidebarOpen={sidebarOpen}
+            onToggleSidebar={() => setSidebarOpen((v) => !v)}
           />
         </div>
         <div className="graph-container">
-          <button
-            className="sidebar-toggle"
-            onClick={() => setSidebarOpen((v) => !v)}
-            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-          >
-            {sidebarOpen ? "◂" : "▸"}
-          </button>
           {graphData.nodes.length === 0 && !loading ? (
             <div className="empty-state">
               <div className="empty-icon">◈</div>
@@ -271,7 +280,8 @@ export default function GraphPage() {
           onClose={() => setShowStatsModal(false)}
           onNodeClick={(node) => {
             setShowStatsModal(false);
-            handleNodeClick(node);
+            const graphNode = graphData.nodes.find((n) => n.id === node.id);
+            handleNodeClick(graphNode || node);
           }}
         />
       )}

@@ -13,10 +13,10 @@ def _repo_node(repo: Repository, compact: bool = False) -> dict:
         "type": "repo",
         "label": repo.full_name,
         "val": max(1, (repo.stars or 0) ** 0.5),
+        "stars": repo.stars or 0,
     }
     if not compact:
         node.update({
-            "stars": repo.stars,
             "language": repo.language,
             "description": repo.description,
             "url": f"https://github.com/{repo.full_name}",
@@ -30,10 +30,10 @@ def _author_node(author: Author, compact: bool = False) -> dict:
         "type": "author",
         "label": author.login,
         "val": max(1, (author.followers or 0) ** 0.4),
+        "followers": author.followers or 0,
     }
     if not compact:
         node.update({
-            "followers": author.followers,
             "avatar_url": author.avatar_url,
             "url": f"https://github.com/{author.login}",
         })

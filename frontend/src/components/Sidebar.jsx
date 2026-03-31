@@ -12,9 +12,18 @@ export default function Sidebar({
   graphStyle,
   onStyleChange,
   onStatsClick,
+  sidebarOpen,
+  onToggleSidebar,
 }) {
   return (
     <aside className="sidebar">
+      <button
+        className="sidebar-toggle"
+        onClick={onToggleSidebar}
+        title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+      >
+        {sidebarOpen ? "◂" : "▸"}
+      </button>
       {/* ── Stats ─────────────────────────────────────── */}
       <div className="sidebar-section stats-clickable" onClick={onStatsClick}>
         <h3>Graph Stats <span className="stats-open-hint">▶ Detail</span></h3>

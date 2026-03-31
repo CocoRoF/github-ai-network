@@ -36,14 +36,8 @@ function computeAnalytics(graphData) {
       ? (2 * links.length) / (nodes.length * (nodes.length - 1))
       : 0;
 
-  /* top by degree */
-  const byDegree = [...nodes]
-    .map((n) => ({ ...n, degree: degree[n.id] || 0 }))
-    .sort((a, b) => b.degree - a.degree);
-
-  /* top repos by stars */
-  const reposByStars = [...repos]
-    .sort((a, b) => (b.stars || b.val || 0) - (a.stars || a.val || 0));
+  /* enrich nodes with degree */
+  const enriched = nodes.map((n) => ({ ...n, degree: degree[n.id] || 0 }));
 
   /* hub authors: count how many repos they connect to */
   const authorRepoCount = {};
@@ -62,15 +56,8 @@ function computeAnalytics(graphData) {
     )
       authorRepoCount[t]++;
   });
-  const hubAuthors = [...authors]
-    .map((a) => ({
-      ...a,
-      repoLinks: authorRepoCount[a.id] || 0,
-      degree: degree[a.id] || 0,
-    }))
-    .sort((a, b) => b.repoLinks - a.repoLinks || b.degree - a.degree);
 
-  /* top topics by repo count */
+  /* topic repo count */
   const topicRepoCount = {};
   topics.forEach((t) => (topicRepoCount[t.id] = 0));
   links.forEach((l) => {
@@ -81,9 +68,23 @@ function computeAnalytics(graphData) {
       if (topicRepoCount[s] !== undefined) topicRepoCount[s]++;
     }
   });
-  const topTopics = [...topics]
-    .map((t) => ({ ...t, linkedRepos: topicRepoCount[t.id] || 0 }))
-    .sort((a, b) => b.linkedRepos - a.linkedRepos);
+
+  /* build enriched arrays */
+  const repoRows = enriched
+    .filter((n) => n.type === "repo")
+    .map((n) => ({ ...n, stars: n.stars || 0 }));
+
+  const authorRows = enriched
+    .filter((n) => n.type === "author")
+    .map((n) => ({
+      ...n,
+      followers: n.followers || 0,
+      repoLinks: authorRepoCount[n.id] || 0,
+    }));
+
+  const topicRows = enriched
+    .filter((n) => n.type === "topic")
+    .map((n) => ({ ...n, linkedRepos: topicRepoCount[n.id] || 0 }));
 
   return {
     nodeCount: nodes.length,
@@ -95,11 +96,54 @@ function computeAnalytics(graphData) {
     avgDegree,
     maxDegree: maxDeg,
     density,
-    byDegree,
-    reposByStars,
-    hubAuthors,
-    topTopics,
+    allNodes: enriched,
+    repoRows,
+    authorRows,
+    topicRows,
   };
+}
+
+/* ── sort helper ────────────────────────────────────── */
+function useSortedList(items, defaultKey, defaultDir = "desc") {
+  const [sortKey, setSortKey] = useState(defaultKey);
+  const [sortDir, setSortDir] = useState(defaultDir);
+
+  const sorted = useMemo(() => {
+    return [...items].sort((a, b) => {
+      const av = a[sortKey] ?? 0;
+      const bv = b[sortKey] ?? 0;
+      if (typeof av === "string") {
+        return sortDir === "asc"
+          ? av.localeCompare(bv)
+          : bv.localeCompare(av);
+      }
+      return sortDir === "asc" ? av - bv : bv - av;
+    });
+  }, [items, sortKey, sortDir]);
+
+  const toggle = (key) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  };
+
+  return { sorted, sortKey, sortDir, toggle };
+}
+
+function SortHeader({ label, field, sortKey, sortDir, onToggle, className }) {
+  const active = sortKey === field;
+  return (
+    <span
+      className={`${className} sortable-header${active ? " active-sort" : ""}`}
+      onClick={() => onToggle(field)}
+    >
+      {label}
+      {active && <span className="sort-arrow">{sortDir === "asc" ? " ▲" : " ▼"}</span>}
+    </span>
+  );
 }
 
 /* ── tabs ───────────────────────────────────────────── */
@@ -203,7 +247,7 @@ function OverviewTab({ a }) {
       <h4>Edge Distribution</h4>
       <div className="stats-bar-chart">
         {Object.entries(a.linkTypes)
-          .sort((a, b) => b[1] - a[1])
+          .sort((x, y) => y[1] - x[1])
           .map(([type, count]) => (
             <Bar
               key={type}
@@ -238,15 +282,20 @@ function Bar({ label, value, total, color }) {
 
 /* ── Repos Tab ──────────────────────────────────────── */
 function ReposTab({ a, onNodeClick }) {
+  const { sorted, sortKey, sortDir, toggle } = useSortedList(
+    a.repoRows,
+    "stars"
+  );
+
   return (
     <div className="stats-list">
       <div className="stats-list-header">
         <span className="stats-col-rank">#</span>
-        <span className="stats-col-name">Repository</span>
-        <span className="stats-col-num">★ Stars</span>
-        <span className="stats-col-num">Degree</span>
+        <SortHeader label="Repository" field="label" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-name" />
+        <SortHeader label="★ Stars" field="stars" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
+        <SortHeader label="Degree" field="degree" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
       </div>
-      {a.reposByStars.slice(0, 100).map((r, i) => (
+      {sorted.slice(0, 100).map((r, i) => (
         <div
           key={r.id}
           className="stats-list-row clickable"
@@ -257,11 +306,9 @@ function ReposTab({ a, onNodeClick }) {
             {r.label}
           </span>
           <span className="stats-col-num">
-            {(r.stars || 0).toLocaleString()}
+            {r.stars.toLocaleString()}
           </span>
-          <span className="stats-col-num">
-            {a.byDegree.find((n) => n.id === r.id)?.degree || 0}
-          </span>
+          <span className="stats-col-num">{r.degree}</span>
         </div>
       ))}
     </div>
@@ -270,15 +317,21 @@ function ReposTab({ a, onNodeClick }) {
 
 /* ── Authors Tab ────────────────────────────────────── */
 function AuthorsTab({ a, onNodeClick }) {
+  const { sorted, sortKey, sortDir, toggle } = useSortedList(
+    a.authorRows,
+    "repoLinks"
+  );
+
   return (
     <div className="stats-list">
       <div className="stats-list-header">
         <span className="stats-col-rank">#</span>
-        <span className="stats-col-name">Author</span>
-        <span className="stats-col-num">Repos</span>
-        <span className="stats-col-num">Degree</span>
+        <SortHeader label="Author" field="label" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-name" />
+        <SortHeader label="Followers" field="followers" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
+        <SortHeader label="Repos" field="repoLinks" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
+        <SortHeader label="Degree" field="degree" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
       </div>
-      {a.hubAuthors.slice(0, 100).map((au, i) => (
+      {sorted.slice(0, 100).map((au, i) => (
         <div
           key={au.id}
           className="stats-list-row clickable"
@@ -288,6 +341,7 @@ function AuthorsTab({ a, onNodeClick }) {
           <span className="stats-col-name" title={au.label}>
             {au.label}
           </span>
+          <span className="stats-col-num">{au.followers.toLocaleString()}</span>
           <span className="stats-col-num">{au.repoLinks}</span>
           <span className="stats-col-num">{au.degree}</span>
         </div>
@@ -298,14 +352,20 @@ function AuthorsTab({ a, onNodeClick }) {
 
 /* ── Topics Tab ─────────────────────────────────────── */
 function TopicsTab({ a, onNodeClick }) {
+  const { sorted, sortKey, sortDir, toggle } = useSortedList(
+    a.topicRows,
+    "linkedRepos"
+  );
+
   return (
     <div className="stats-list">
       <div className="stats-list-header">
         <span className="stats-col-rank">#</span>
-        <span className="stats-col-name">Topic</span>
-        <span className="stats-col-num">Repos</span>
+        <SortHeader label="Topic" field="label" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-name" />
+        <SortHeader label="Repos" field="linkedRepos" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
+        <SortHeader label="Degree" field="degree" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
       </div>
-      {a.topTopics.slice(0, 100).map((t, i) => (
+      {sorted.slice(0, 100).map((t, i) => (
         <div
           key={t.id}
           className="stats-list-row clickable"
@@ -314,6 +374,7 @@ function TopicsTab({ a, onNodeClick }) {
           <span className="stats-col-rank">{i + 1}</span>
           <span className="stats-col-name">{t.label}</span>
           <span className="stats-col-num">{t.linkedRepos}</span>
+          <span className="stats-col-num">{t.degree}</span>
         </div>
       ))}
     </div>
@@ -322,15 +383,20 @@ function TopicsTab({ a, onNodeClick }) {
 
 /* ── Centrality Tab ─────────────────────────────────── */
 function CentralityTab({ a, onNodeClick }) {
+  const { sorted, sortKey, sortDir, toggle } = useSortedList(
+    a.allNodes,
+    "degree"
+  );
+
   return (
     <div className="stats-list">
       <div className="stats-list-header">
         <span className="stats-col-rank">#</span>
         <span className="stats-col-type">Type</span>
-        <span className="stats-col-name">Node</span>
-        <span className="stats-col-num">Degree</span>
+        <SortHeader label="Node" field="label" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-name" />
+        <SortHeader label="Degree" field="degree" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} className="stats-col-num" />
       </div>
-      {a.byDegree.slice(0, 100).map((n, i) => (
+      {sorted.slice(0, 100).map((n, i) => (
         <div
           key={n.id}
           className="stats-list-row clickable"
