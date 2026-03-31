@@ -11,12 +11,13 @@ export default function Sidebar({
   onSessionChange,
   graphStyle,
   onStyleChange,
+  onStatsClick,
 }) {
   return (
     <aside className="sidebar">
       {/* ── Stats ─────────────────────────────────────── */}
-      <div className="sidebar-section">
-        <h3>Graph Stats</h3>
+      <div className="sidebar-section stats-clickable" onClick={onStatsClick}>
+        <h3>Graph Stats <span className="stats-open-hint">▶ Detail</span></h3>
         <div className="stats-grid">
           <div className="stat">
             <span className="stat-value">{stats.repos || 0}</span>

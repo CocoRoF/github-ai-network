@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import GraphView from "../components/GraphView";
 import Sidebar from "../components/Sidebar";
+import StatsModal from "../components/StatsModal";
 
 const API = "/api";
 
@@ -29,6 +30,8 @@ export default function GraphPage() {
     edgeOpacity: 0.35,
     edgeWidthScale: 1.0,
   });
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [showStatsModal, setShowStatsModal] = useState(false);
   const graphRef = useRef();
   const searchTimeout = useRef(null);
 
@@ -213,21 +216,31 @@ export default function GraphPage() {
       </header>
 
       <main className="app-main">
-        <Sidebar
-          stats={stats}
-          crawlerStatus={crawlerStatus}
-          filters={filters}
-          onFiltersChange={setFilters}
-          selectedNode={selectedNode}
-          onExpandNode={handleExpand}
-          onRefresh={fetchGraph}
-          sessions={sessions}
-          selectedSession={selectedSession}
-          onSessionChange={setSelectedSession}
-          graphStyle={graphStyle}
-          onStyleChange={setGraphStyle}
-        />
+        <div className={`sidebar-wrapper${sidebarOpen ? "" : " collapsed"}`}>
+          <Sidebar
+            stats={stats}
+            crawlerStatus={crawlerStatus}
+            filters={filters}
+            onFiltersChange={setFilters}
+            selectedNode={selectedNode}
+            onExpandNode={handleExpand}
+            onRefresh={fetchGraph}
+            sessions={sessions}
+            selectedSession={selectedSession}
+            onSessionChange={setSelectedSession}
+            graphStyle={graphStyle}
+            onStyleChange={setGraphStyle}
+            onStatsClick={() => setShowStatsModal(true)}
+          />
+        </div>
         <div className="graph-container">
+          <button
+            className="sidebar-toggle"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          >
+            {sidebarOpen ? "◂" : "▸"}
+          </button>
           {graphData.nodes.length === 0 && !loading ? (
             <div className="empty-state">
               <div className="empty-icon">◈</div>
@@ -251,6 +264,17 @@ export default function GraphPage() {
           )}
         </div>
       </main>
+
+      {showStatsModal && (
+        <StatsModal
+          graphData={graphData}
+          onClose={() => setShowStatsModal(false)}
+          onNodeClick={(node) => {
+            setShowStatsModal(false);
+            handleNodeClick(node);
+          }}
+        />
+      )}
     </div>
   );
 }
