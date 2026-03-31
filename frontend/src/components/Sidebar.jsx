@@ -143,11 +143,11 @@ export default function Sidebar({
         </div>
 
         <div className="filter-group">
-          <label>Max Nodes: {filters.limit}</label>
+          <label>Max Nodes: {filters.limit === 10000 ? '∞' : filters.limit}</label>
           <input
             type="range"
             min={50}
-            max={2000}
+            max={10000}
             step={50}
             value={filters.limit}
             onChange={(e) =>

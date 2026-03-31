@@ -15,7 +15,7 @@ router = APIRouter()
 async def get_graph(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    limit: int = Query(default=300, ge=1, le=2000),
+    limit: int = Query(default=300, ge=1, le=10000),
     min_stars: int = Query(default=0, ge=0),
     search: str = Query(default=None),
     types: str = Query(default="author,repo,topic"),

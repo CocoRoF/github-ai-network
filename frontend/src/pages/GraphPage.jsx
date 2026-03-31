@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import GraphView from "../components/GraphView";
+import TableView from "../components/TableView";
 import Sidebar from "../components/Sidebar";
 import StatsModal from "../components/StatsModal";
 
@@ -32,6 +33,7 @@ export default function GraphPage() {
   });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showStatsModal, setShowStatsModal] = useState(false);
+  const [viewMode, setViewMode] = useState("graph");
   const graphRef = useRef();
   const searchTimeout = useRef(null);
 
@@ -181,6 +183,20 @@ export default function GraphPage() {
           <h1 className="app-title">
             <span className="title-icon">◈</span> GitHub AI Network
           </h1>
+          <div className="view-tabs">
+            <button
+              className={`view-tab${viewMode === "graph" ? " active" : ""}`}
+              onClick={() => setViewMode("graph")}
+            >
+              Graph
+            </button>
+            <button
+              className={`view-tab${viewMode === "table" ? " active" : ""}`}
+              onClick={() => setViewMode("table")}
+            >
+              Table
+            </button>
+          </div>
         </div>
 
         <div className="header-center">
@@ -262,13 +278,18 @@ export default function GraphPage() {
                 to create a crawler session.
               </p>
             </div>
-          ) : (
+          ) : viewMode === "graph" ? (
             <GraphView
               graphData={graphData}
               onNodeClick={handleNodeClick}
               selectedNode={selectedNode}
               graphRef={graphRef}
               graphStyle={graphStyle}
+            />
+          ) : (
+            <TableView
+              graphData={graphData}
+              onNodeClick={handleNodeClick}
             />
           )}
         </div>
