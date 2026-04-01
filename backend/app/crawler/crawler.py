@@ -30,7 +30,9 @@ class CrawlerManager:
         self._worker: asyncio.Task | None = None
         self._last_error: str | None = None
         self._invalidate_cache_fn = None  # set by main.py
-
+        # ── in-memory lookup caches (github_id → db_id) ──
+        self._author_cache: dict[int, int] = {}   # github_id → db primary key
+        self._topic_cache: dict[str, int] = {}     # topic_name → db primary key
         # ── observability state ───────────────────────
         self._heartbeat_at: float = 0.0           # last worker activity (time.time())
         self._started_at: float | None = None      # worker start time
@@ -378,29 +380,51 @@ class CrawlerManager:
                             metadata={"task_id": task.id, "result_count": count, "duration": duration},
                         )
                     except Exception as exc:
-                        task.status = "error"
-                        task.error_message = str(exc)[:500]
-                        duration = round(time.time() - task_start, 2)
-                        self._last_error = f"Task {task.id} [{task.task_type}]: {exc}"
-                        await session.execute(
-                            update(CrawlSession)
-                            .where(CrawlSession.id == session_id)
-                            .values(
-                                tasks_pending=CrawlSession.tasks_pending - 1,
-                                tasks_errors=CrawlSession.tasks_errors + 1,
+                        task.retry_count = (task.retry_count or 0) + 1
+                        if task.retry_count < (task.max_retries or 3):
+                            # retriable: reset to pending with lowered priority
+                            task.status = "pending"
+                            task.priority = max(0, task.priority - 100)
+                            task.error_message = f"Retry {task.retry_count}: {str(exc)[:300]}"
+                            duration = round(time.time() - task_start, 2)
+                            # tasks_pending stays the same (task goes back to queue)
+                            logger.warning(
+                                "Task %d [%s] retry %d/%d: %s",
+                                task.id, task.task_type, task.retry_count,
+                                task.max_retries or 3, exc,
                             )
-                        )
-                        logger.error(
-                            "Task %d [%s] error: %s",
-                            task.id, task.task_type, exc, exc_info=True,
-                        )
-                        await self._log_event(
-                            "task_error",
-                            f"[{task.task_type}] {task.target}: {str(exc)[:300]}",
-                            level="error",
-                            session_id=session_id,
-                            metadata={"task_id": task.id, "error": str(exc)[:500], "duration": duration},
-                        )
+                            await self._log_event(
+                                "task_retry",
+                                f"[{task.task_type}] {task.target}: retry {task.retry_count} — {str(exc)[:200]}",
+                                level="warning",
+                                session_id=session_id,
+                                metadata={"task_id": task.id, "retry": task.retry_count, "duration": duration},
+                            )
+                        else:
+                            # max retries exceeded: permanent failure
+                            task.status = "error"
+                            task.error_message = str(exc)[:500]
+                            duration = round(time.time() - task_start, 2)
+                            self._last_error = f"Task {task.id} [{task.task_type}]: {exc}"
+                            await session.execute(
+                                update(CrawlSession)
+                                .where(CrawlSession.id == session_id)
+                                .values(
+                                    tasks_pending=CrawlSession.tasks_pending - 1,
+                                    tasks_errors=CrawlSession.tasks_errors + 1,
+                                )
+                            )
+                            logger.error(
+                                "Task %d [%s] error (max retries): %s",
+                                task.id, task.task_type, exc, exc_info=True,
+                            )
+                            await self._log_event(
+                                "task_error",
+                                f"[{task.task_type}] {task.target}: {str(exc)[:300]}",
+                                level="error",
+                                session_id=session_id,
+                                metadata={"task_id": task.id, "error": str(exc)[:500], "duration": duration},
+                            )
 
                     task.processed_at = datetime.now(timezone.utc)
                     self._current_task = None
@@ -603,7 +627,7 @@ class CrawlerManager:
         await session.commit()
         return 1
 
-    # ── fetch_user (relaxed filter: stars>50) ─────────────
+    # ── fetch_user ─────────────────────────────────────────
 
     async def _do_fetch_user(
         self, session: AsyncSession, session_id: int,
@@ -617,23 +641,24 @@ class CrawlerManager:
         if author:
             await self._link_session_author(session, session_id, author.id)
 
-        repos_data = await self.client.get_user_repos(login, per_page=30)
         count = 1
-        if repos_data and isinstance(repos_data, list):
+        for page in range(1, 4):  # max 3 pages (90 repos)
+            repos_data = await self.client.get_user_repos(login, per_page=30, page=page)
+            if not repos_data or not isinstance(repos_data, list):
+                break
             for rd in repos_data:
-                # relaxed filter: AI-related OR stars > 50
-                if self._is_ai_related(rd) or rd.get("stargazers_count", 0) > 50:
-                    repo = await self._save_repo(session, rd)
-                    if repo:
-                        await self._link_session_repo(session, session_id, repo.id)
-                        count += 1
-                        # expand: fetch contributors for these repos too
-                        await self._add_task(
-                            session, session_id,
-                            "fetch_contributors", rd["full_name"],
-                            depth=depth + 1,
-                            priority=min(rd.get("stargazers_count", 0), 5000),
-                        )
+                repo = await self._save_repo(session, rd)
+                if repo:
+                    await self._link_session_repo(session, session_id, repo.id)
+                    count += 1
+                    await self._add_task(
+                        session, session_id,
+                        "fetch_contributors", rd["full_name"],
+                        depth=depth + 1,
+                        priority=min(rd.get("stargazers_count", 0), 5000),
+                    )
+            if len(repos_data) < 30:
+                break
 
         await session.commit()
         return count
@@ -644,10 +669,6 @@ class CrawlerManager:
         self, session: AsyncSession, session_id: int,
         full_name: str, depth: int,
     ) -> int:
-        data = await self.client.get_repo_contributors(full_name, per_page=15)
-        if not data or not isinstance(data, list):
-            return 0
-
         result = await session.execute(
             select(Repository).where(Repository.full_name == full_name)
         )
@@ -656,35 +677,43 @@ class CrawlerManager:
             return 0
 
         count = 0
-        for cd in data:
-            author = await self._save_author(session, cd)
-            if not author:
-                continue
+        for page in range(1, 3):  # max 2 pages (60 contributors)
+            data = await self.client.get_repo_contributors(full_name, per_page=30, page=page)
+            if not data or not isinstance(data, list):
+                break
 
-            await self._link_session_author(session, session_id, author.id)
+            for cd in data:
+                author = await self._save_author(session, cd)
+                if not author:
+                    continue
 
-            existing = await session.execute(
-                select(RepoContributor).where(
-                    RepoContributor.repository_id == repo.id,
-                    RepoContributor.author_id == author.id,
-                )
-            )
-            if existing.scalar_one_or_none() is None:
-                session.add(
-                    RepoContributor(
-                        repository_id=repo.id,
-                        author_id=author.id,
-                        contributions=cd.get("contributions", 0),
+                await self._link_session_author(session, session_id, author.id)
+
+                existing = await session.execute(
+                    select(RepoContributor).where(
+                        RepoContributor.repository_id == repo.id,
+                        RepoContributor.author_id == author.id,
                     )
                 )
+                if existing.scalar_one_or_none() is None:
+                    session.add(
+                        RepoContributor(
+                            repository_id=repo.id,
+                            author_id=author.id,
+                            contributions=cd.get("contributions", 0),
+                        )
+                    )
 
-            await self._add_task(
-                session, session_id,
-                "fetch_user", cd["login"],
-                depth=depth + 1,
-                priority=min(cd.get("contributions", 0), 1000),
-            )
-            count += 1
+                await self._add_task(
+                    session, session_id,
+                    "fetch_user", cd["login"],
+                    depth=depth + 1,
+                    priority=min(cd.get("contributions", 0), 1000),
+                )
+                count += 1
+
+            if len(data) < 30:
+                break  # no more pages
 
         await session.commit()
         return count
@@ -697,14 +726,23 @@ class CrawlerManager:
         if not data or "id" not in data:
             return None
 
+        github_id = data["id"]
+
+        # fast path: return cached author if not requesting detailed update
+        if github_id in self._author_cache and not detailed:
+            cached_id = self._author_cache[github_id]
+            author = await session.get(Author, cached_id)
+            if author:
+                return author
+
         result = await session.execute(
-            select(Author).where(Author.github_id == data["id"])
+            select(Author).where(Author.github_id == github_id)
         )
         author = result.scalar_one_or_none()
 
         if author is None:
             author = Author(
-                github_id=data["id"],
+                github_id=github_id,
                 login=data["login"],
                 avatar_url=data.get("avatar_url"),
                 user_type=data.get("type", "User"),
@@ -722,6 +760,7 @@ class CrawlerManager:
             author.crawled_at = datetime.now(timezone.utc)
 
         await session.flush()
+        self._author_cache[github_id] = author.id
         return author
 
     async def _save_repo(
@@ -784,14 +823,23 @@ class CrawlerManager:
 
         # topics
         for topic_name in data.get("topics", []):
-            t_result = await session.execute(
-                select(Topic).where(Topic.name == topic_name)
-            )
-            topic = t_result.scalar_one_or_none()
-            if topic is None:
-                topic = Topic(name=topic_name)
-                session.add(topic)
-                await session.flush()
+            if topic_name in self._topic_cache:
+                topic_id = self._topic_cache[topic_name]
+                topic = await session.get(Topic, topic_id)
+                if topic is None:
+                    # cache stale — fall through to DB lookup
+                    del self._topic_cache[topic_name]
+
+            if topic_name not in self._topic_cache:
+                t_result = await session.execute(
+                    select(Topic).where(Topic.name == topic_name)
+                )
+                topic = t_result.scalar_one_or_none()
+                if topic is None:
+                    topic = Topic(name=topic_name)
+                    session.add(topic)
+                    await session.flush()
+                self._topic_cache[topic_name] = topic.id
 
             link_exists = await session.execute(
                 select(RepoTopic).where(
@@ -817,8 +865,6 @@ class CrawlerManager:
         if any(kw in desc for kw in AI_KEYWORDS):
             return True
         if any(kw in name for kw in ["ml", "ai", "neural", "llm", "gpt", "bert", "transformer"]):
-            return True
-        if repo_data.get("stargazers_count", 0) > 500:
             return True
         return False
 

@@ -29,7 +29,7 @@ class GitHubClient:
         self.rate_limit_reset = 0
         self.rate_limit_waiting = False
         self.total_api_calls = 0
-        self.delay = settings.crawler_delay
+        self.base_delay = settings.crawler_delay
 
         # optional async callbacks set by CrawlerManager
         self._on_rate_limit_wait: Callable[[int, float], Awaitable] | None = None
@@ -71,8 +71,22 @@ class GitHubClient:
                 if self._on_rate_limit_resume:
                     await self._on_rate_limit_resume()
 
+    def _calculate_delay(self) -> float:
+        """Adaptive delay based on rate limit remaining."""
+        if self.rate_limit_remaining > 1000:
+            return 0.5
+        elif self.rate_limit_remaining > 500:
+            return 1.0
+        elif self.rate_limit_remaining > 100:
+            return self.base_delay
+        elif self.rate_limit_remaining > 20:
+            return 5.0
+        else:
+            return 10.0
+
     async def _request(self, method: str, url: str, **kwargs):
-        await asyncio.sleep(self.delay)
+        delay = self._calculate_delay()
+        await asyncio.sleep(delay)
         self.total_api_calls += 1
 
         for attempt in range(3):

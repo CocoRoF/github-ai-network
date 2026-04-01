@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Depends, Request, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select, func
 
 from app.api.auth import require_admin, verify_password, create_token
 from app.crawler.crawler import CrawlerManager
+from app.database import async_session_factory
+from app.models import CrawlTask
 
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -144,3 +147,28 @@ async def crawler_recent_logs(
     """Fast in-memory log retrieval (no DB hit)."""
     crawler = _get_crawler(request)
     return crawler.get_recent_logs(limit=limit)
+
+
+# ── depth stats ──────────────────────────────────────────
+
+@admin_router.get("/sessions/{session_id}/depth-stats")
+async def session_depth_stats(session_id: int, _=Depends(require_admin)):
+    """Distribution of tasks by depth and status for monitoring crawl expansion."""
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(
+                CrawlTask.depth,
+                CrawlTask.status,
+                func.count(CrawlTask.id),
+            )
+            .where(CrawlTask.session_id == session_id)
+            .group_by(CrawlTask.depth, CrawlTask.status)
+            .order_by(CrawlTask.depth)
+        )
+        return {
+            "session_id": session_id,
+            "depth_distribution": [
+                {"depth": row[0], "status": row[1], "count": row[2]}
+                for row in result.all()
+            ],
+        }

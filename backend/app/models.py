@@ -182,6 +182,8 @@ class CrawlTask(Base):
     priority = Column(Integer, default=0)
     status = Column(String(20), default="pending")
     result_count = Column(Integer, default=0)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     processed_at = Column(DateTime(timezone=True), nullable=True)

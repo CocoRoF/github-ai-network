@@ -1,4 +1,4 @@
-from sqlalchemy import select, text, bindparam
+from sqlalchemy import select, text, bindparam, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -105,7 +105,7 @@ class GraphBuilder:
                 if r.owner_id:
                     owner_ids.add(r.owner_id)
 
-        # ── authors (owners) ──────────────────────────────
+        # ── authors (owners + top contributors) ──────────────
         if "author" in node_types and owner_ids:
             authors = (
                 await session.execute(select(Author).where(Author.id.in_(owner_ids)))
@@ -122,6 +122,34 @@ class GraphBuilder:
                     tgt = f"repo:{r.id}"
                     links.append({"source": src, "target": tgt, "type": "owns"})
                     own_link_keys.add((src, tgt))
+
+        # ── contributor authors (contributions >= 10) ─────
+        contrib_author_ids: set[int] = set()
+        if "author" in node_types and repo_ids:
+            top_contribs = (
+                await session.execute(
+                    select(
+                        RepoContributor.author_id,
+                        func.sum(RepoContributor.contributions).label("total"),
+                    )
+                    .where(RepoContributor.repository_id.in_(repo_ids))
+                    .group_by(RepoContributor.author_id)
+                    .having(func.sum(RepoContributor.contributions) >= 10)
+                )
+            ).all()
+
+            contrib_author_ids = {row.author_id for row in top_contribs} - owner_ids
+            if contrib_author_ids:
+                contrib_authors = (
+                    await session.execute(
+                        select(Author).where(Author.id.in_(contrib_author_ids))
+                    )
+                ).scalars().all()
+                for a in contrib_authors:
+                    nid = f"author:{a.id}"
+                    if nid not in node_ids:
+                        nodes.append(_author_node(a, compact))
+                        node_ids.add(nid)
 
         # ── topics ────────────────────────────────────────
         if "topic" in node_types and repo_ids:
@@ -158,6 +186,7 @@ class GraphBuilder:
         # ── contributor edges (with weight) ───────────────
         author_db_ids: list[int] = []
         if "author" in node_types and repo_ids:
+            # includes both owners and contributor authors
             author_db_ids = [
                 int(nid.split(":")[1]) for nid in node_ids if nid.startswith("author:")
             ]
@@ -202,7 +231,9 @@ class GraphBuilder:
                   ON a1.repository_id = a2.repository_id AND a1.author_id < a2.author_id
                 WHERE a1.author_id IN :ids AND a2.author_id IN :ids
                 GROUP BY a1.author_id, a2.author_id
-                HAVING COUNT(*) >= 2
+                HAVING COUNT(*) >= 1
+                ORDER BY shared DESC
+                LIMIT 500
             """).bindparams(bindparam("ids", expanding=True))
             coworker_result = await session.execute(
                 coworker_sql, {"ids": author_db_ids}
@@ -382,6 +413,44 @@ class GraphBuilder:
                     "type": "contributes",
                     "weight": min(contrib.contributions / 100, 3) if contrib.contributions else 0.5,
                 })
+
+            # ── coworker discovery ────────────────────────
+            # find authors who contributed to the same repos
+            contributed_repo_ids = [
+                int(nid.split(":")[1]) for nid in node_ids if nid.startswith("repo:")
+            ]
+            if contributed_repo_ids:
+                coworker_rows = (
+                    await session.execute(
+                        select(
+                            RepoContributor.author_id,
+                            func.sum(RepoContributor.contributions).label("total"),
+                        )
+                        .where(
+                            RepoContributor.repository_id.in_(contributed_repo_ids),
+                            RepoContributor.author_id != db_id,
+                        )
+                        .group_by(RepoContributor.author_id)
+                        .order_by(func.sum(RepoContributor.contributions).desc())
+                        .limit(20)
+                    )
+                ).all()
+
+                for row in coworker_rows:
+                    coworker_id = row.author_id
+                    total_contribs = row.total
+                    coworker_author = await session.get(Author, coworker_id)
+                    if coworker_author:
+                        nid = f"author:{coworker_id}"
+                        if nid not in node_ids:
+                            nodes.append(_author_node(coworker_author, compact=True))
+                            node_ids.add(nid)
+                        links.append({
+                            "source": f"author:{db_id}",
+                            "target": nid,
+                            "type": "coworker",
+                            "weight": min(total_contribs / 50, 3) if total_contribs else 0.5,
+                        })
 
         elif node_type == "topic":
             topic = (
