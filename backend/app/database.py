@@ -28,7 +28,7 @@ async def get_db():
 async def init_db():
     async with engine.begin() as conn:
         def _sync_check_and_create(sync_conn):
-            from sqlalchemy import inspect
+            from sqlalchemy import inspect, text as sa_text
             inspector = inspect(sync_conn)
             # If the old schema exists without new columns, drop and recreate
             if inspector.has_table("crawl_tasks"):
@@ -36,4 +36,16 @@ async def init_db():
                 if "session_id" not in columns:
                     Base.metadata.drop_all(sync_conn)
             Base.metadata.create_all(sync_conn)
+
+            # ── incremental migrations ────────────────────
+            if inspector.has_table("crawl_tasks"):
+                columns = [c["name"] for c in inspector.get_columns("crawl_tasks")]
+                if "retry_count" not in columns:
+                    sync_conn.execute(sa_text(
+                        "ALTER TABLE crawl_tasks ADD COLUMN retry_count INTEGER DEFAULT 0"
+                    ))
+                if "max_retries" not in columns:
+                    sync_conn.execute(sa_text(
+                        "ALTER TABLE crawl_tasks ADD COLUMN max_retries INTEGER DEFAULT 3"
+                    ))
         await conn.run_sync(_sync_check_and_create)
