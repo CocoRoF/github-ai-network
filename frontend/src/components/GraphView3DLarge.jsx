@@ -270,18 +270,9 @@ export default function GraphView3DLarge({
     controls.minDistance = 10;
     controls.maxDistance = 30000;
 
-    // Lights — neutral white-ish to preserve instanceColor hues
-    const ambient = new THREE.AmbientLight(0xcccccc, 1.0);
+    // Minimal ambient for selection ring / other scene objects
+    const ambient = new THREE.AmbientLight(0xffffff, 0.8);
     scene.add(ambient);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
-    keyLight.position.set(300, 500, 400);
-    scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0xaabbcc, 0.5);
-    fillLight.position.set(-400, -200, 300);
-    scene.add(fillLight);
-    const rimLight = new THREE.PointLight(0x9999ff, 0.4, 12000);
-    rimLight.position.set(0, -300, -500);
-    scene.add(rimLight);
 
     // Star field
     const stars = createStarField(4000, 8000);
@@ -404,13 +395,13 @@ export default function GraphView3DLarge({
       }
     }
 
-    // Bloom (< 20K — wider range for visual quality)
-    if (nc < 20000 && !t.composer) {
+    // Bloom — critical for the celestial glow effect
+    if (!t.composer) {
       try {
         const s = styleRef.current;
         const composer = new EffectComposer(renderer);
         composer.addPass(new RenderPass(scene, camera));
-        const bloomRes = nc > 10000 ? 2 : 1.5;
+        const bloomRes = nc > 30000 ? 3 : nc > 10000 ? 2 : 1.5;
         const bloom = new UnrealBloomPass(
           new THREE.Vector2(
             renderer.domElement.width / bloomRes,
@@ -424,12 +415,6 @@ export default function GraphView3DLarge({
         t.composer = composer;
         t.bloomPass = bloom;
       } catch (_) {}
-    } else if (nc >= 20000 && t.composer) {
-      t.composer = null;
-      if (t.bloomPass) {
-        t.bloomPass.dispose();
-        t.bloomPass = null;
-      }
     }
 
     // Fog
@@ -477,15 +462,92 @@ export default function GraphView3DLarge({
       settled: false,
     };
 
-    /* ── InstancedMesh for nodes ── */
-    const segments = nc > 50000 ? 6 : nc > 15000 ? 8 : 12;
-    const rings = nc > 50000 ? 4 : nc > 15000 ? 6 : 8;
+    /* ── InstancedMesh for nodes — custom celestial body shader ── */
+    const segments = nc > 50000 ? 8 : nc > 15000 ? 12 : 16;
+    const rings = nc > 50000 ? 6 : nc > 15000 ? 8 : 12;
     const sphereGeo = new THREE.SphereGeometry(1, segments, rings);
-    const nodeMaterial = new THREE.MeshStandardMaterial({
-      roughness: 0.3,
-      metalness: 0.1,
-      emissive: 0x111111,      // neutral — let instanceColor drive the hue
-      emissiveIntensity: 0.15,
+
+    const nodeMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uGlowIntensity: { value: 1.0 },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        varying vec3 vColor;
+        varying vec3 vWorldPos;
+
+        void main() {
+          // Instance color (Three.js auto-defines USE_INSTANCING_COLOR)
+          vColor = vec3(1.0);
+          #ifdef USE_INSTANCING_COLOR
+            vColor = instanceColor;
+          #endif
+
+          // Position with instancing
+          vec4 localPos = vec4(position, 1.0);
+          #ifdef USE_INSTANCING
+            localPos = instanceMatrix * localPos;
+          #endif
+          vec4 mvPosition = modelViewMatrix * localPos;
+
+          // Normal with instancing
+          vec3 n = normal;
+          #ifdef USE_INSTANCING
+            n = mat3(instanceMatrix) * n;
+          #endif
+          vNormal = normalize(normalMatrix * n);
+          vViewDir = normalize(-mvPosition.xyz);
+          vWorldPos = localPos.xyz;
+
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uGlowIntensity;
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        varying vec3 vColor;
+        varying vec3 vWorldPos;
+
+        void main() {
+          vec3 n = normalize(vNormal);
+          vec3 v = normalize(vViewDir);
+          float NdotV = max(dot(n, v), 0.0);
+
+          // ── Fresnel rim glow — bright edges like atmosphere ──
+          float fresnel = pow(1.0 - NdotV, 3.0);
+
+          // ── Core gradient — brighter/whiter at center ──
+          float core = smoothstep(0.0, 1.0, NdotV);
+
+          // ── Soft directional light for depth ──
+          vec3 lightDir = normalize(vec3(0.4, 0.8, 0.6));
+          float diffuse = max(dot(n, lightDir), 0.0) * 0.25 + 0.75;
+
+          // ── Color composition ──
+          vec3 baseColor = vColor;
+          vec3 centerColor = mix(baseColor, vec3(1.0), 0.35);  // whiter center
+          vec3 edgeColor = baseColor * 1.3;                      // saturated edges
+          vec3 bodyColor = mix(edgeColor, centerColor, core) * diffuse;
+
+          // ── Rim glow (bloom picks this up for halo) ──
+          vec3 rimColor = (baseColor + vec3(0.25)) * 1.6;
+
+          // ── Subsurface scatter approximation ──
+          float scatter = pow(NdotV, 0.4) * 0.15;
+
+          // ── Final composition ──
+          vec3 color = bodyColor * 0.85;
+          color += rimColor * fresnel * 0.7;
+          color += baseColor * scatter;
+          color *= uGlowIntensity;
+
+          gl_FragColor = vec4(color, 1.0);
+        }
+      `,
+      transparent: false,
+      depthWrite: true,
     });
 
     const nodesMesh = new THREE.InstancedMesh(sphereGeo, nodeMaterial, nc);
@@ -556,8 +618,9 @@ export default function GraphView3DLarge({
     const edgeMaterial = new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
-      opacity: nc > 15000 ? 0.08 : nc > 5000 ? 0.12 : s.edgeOpacity,
+      opacity: nc > 15000 ? 0.1 : nc > 5000 ? 0.15 : s.edgeOpacity,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
 
     const edgesMesh = new THREE.LineSegments(edgeGeo, edgeMaterial);
@@ -734,11 +797,9 @@ export default function GraphView3DLarge({
     }
     if (nodesMesh.instanceColor) nodesMesh.instanceColor.needsUpdate = true;
 
-    // Update node material emissive based on selection state
-    if (hl) {
-      nodesMesh.material.emissiveIntensity = 0.8;
-    } else {
-      nodesMesh.material.emissiveIntensity = 0.5;
+    // Boost glow during selection for highlighted nodes
+    if (nodesMesh.material.uniforms?.uGlowIntensity) {
+      nodesMesh.material.uniforms.uGlowIntensity.value = hl ? 1.15 : 1.0;
     }
 
     // Update edge colors with 3-hop gradient
