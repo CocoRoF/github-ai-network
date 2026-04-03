@@ -17,7 +17,7 @@ export default function GraphPage() {
   const [filters, setFilters] = useState({
     types: ["author", "repo", "topic"],
     minStars: 0,
-    limit: 500,
+    limit: 100000,
     language: "",
   });
   const [crawlerStatus, setCrawlerStatus] = useState({});

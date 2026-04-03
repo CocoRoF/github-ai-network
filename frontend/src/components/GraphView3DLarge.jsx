@@ -822,6 +822,88 @@ export default function GraphView3DLarge({
     t.bloomPass.threshold = style.bloomThreshold;
   }, [style.bloomStrength, style.bloomRadius, style.bloomThreshold]);
 
+  /* ── Effect 4b: node size live update ──────────────── */
+  useEffect(() => {
+    const gObj = graphObjRef.current;
+    if (!gObj?.nodesMesh) return;
+    const { nodes, positions, scales } = dataRef.current;
+    if (!positions || !scales) return;
+    const nc = nodes.length;
+    const { min: vMin, max: vMax } = valRange;
+
+    // Recompute scales
+    const newScales = new Float32Array(nc);
+    for (let i = 0; i < nc; i++) {
+      const raw = nodes[i].val || 1;
+      const tt = vMax > vMin ? (raw - vMin) / (vMax - vMin) : 0;
+      newScales[i] = style.nodeMinSize + tt * (style.nodeMaxSize - style.nodeMinSize);
+    }
+    dataRef.current.scales = newScales;
+
+    // Update instance matrices with new scales
+    const tmpPos = new THREE.Vector3();
+    const tmpScale = new THREE.Vector3();
+    const tmpQuat = new THREE.Quaternion();
+    const tmpMat = new THREE.Matrix4();
+    for (let i = 0; i < nc; i++) {
+      tmpPos.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+      const sc = newScales[i];
+      tmpScale.set(sc, sc, sc);
+      tmpMat.compose(tmpPos, tmpQuat, tmpScale);
+      gObj.nodesMesh.setMatrixAt(i, tmpMat);
+    }
+    gObj.nodesMesh.instanceMatrix.needsUpdate = true;
+  }, [style.nodeMinSize, style.nodeMaxSize, valRange]);
+
+  /* ── Effect 4c: edge opacity live update ───────────── */
+  useEffect(() => {
+    const gObj = graphObjRef.current;
+    if (!gObj?.edgesMesh) return;
+    gObj.edgesMesh.material.opacity = style.edgeOpacity;
+  }, [style.edgeOpacity]);
+
+  /* ── Effect 4d: fog live update ────────────────────── */
+  useEffect(() => {
+    const t = threeRef.current;
+    if (!t) return;
+    if (style.fogDensity > 0) {
+      t.scene.fog = new THREE.FogExp2(0x030810, style.fogDensity * 0.5);
+    } else {
+      t.scene.fog = null;
+    }
+  }, [style.fogDensity]);
+
+  /* ── Effect 4e: star field toggle ──────────────────── */
+  useEffect(() => {
+    const t = threeRef.current;
+    if (!t?.stars) return;
+    t.stars.visible = style.starField !== false;
+  }, [style.starField]);
+
+  /* ── Effect 4f: auto orbit ─────────────────────────── */
+  useEffect(() => {
+    const t = threeRef.current;
+    if (!t) return;
+    if (!style.autoOrbit) return;
+
+    let angle = 0;
+    const id = setInterval(() => {
+      if (!threeRef.current) return;
+      const cam = threeRef.current.camera;
+      const ctrl = threeRef.current.controls;
+      const dist = cam.position.length() || 800;
+      angle += 0.003;
+      cam.position.set(
+        dist * Math.sin(angle),
+        cam.position.y,
+        dist * Math.cos(angle)
+      );
+      ctrl.update();
+    }, 30);
+
+    return () => clearInterval(id);
+  }, [style.autoOrbit]);
+
   /* ── Effect 5: expose API via graphRef ─────────────── */
   useEffect(() => {
     if (!graphRef) return;
