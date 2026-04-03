@@ -1,3 +1,5 @@
+import { useState, useRef, useEffect } from "react";
+
 export default function Sidebar({
   stats,
   crawlerStatus,
@@ -15,6 +17,24 @@ export default function Sidebar({
   sidebarOpen,
   onToggleSidebar,
 }) {
+  const [editingStars, setEditingStars] = useState(false);
+  const [starsInput, setStarsInput] = useState("");
+  const starsInputRef = useRef(null);
+
+  useEffect(() => {
+    if (editingStars && starsInputRef.current) {
+      starsInputRef.current.focus();
+      starsInputRef.current.select();
+    }
+  }, [editingStars]);
+
+  const commitStarsInput = () => {
+    const val = parseInt(starsInput, 10);
+    if (!isNaN(val) && val >= 0) {
+      onFiltersChange({ ...filters, minStars: Math.min(val, 100000) });
+    }
+    setEditingStars(false);
+  };
   return (
     <aside className="sidebar">
       <button
@@ -129,13 +149,41 @@ export default function Sidebar({
         </div>
 
         <div className="filter-group">
-          <label>Min Stars: {filters.minStars.toLocaleString()}</label>
+          <label>
+            Min Stars:{" "}
+            {editingStars ? (
+              <input
+                ref={starsInputRef}
+                type="number"
+                className="stars-inline-input"
+                value={starsInput}
+                min={0}
+                onChange={(e) => setStarsInput(e.target.value)}
+                onBlur={commitStarsInput}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitStarsInput();
+                  if (e.key === "Escape") setEditingStars(false);
+                }}
+              />
+            ) : (
+              <span
+                className="stars-value-editable"
+                onDoubleClick={() => {
+                  setStarsInput(String(filters.minStars));
+                  setEditingStars(true);
+                }}
+                title="Double-click to edit"
+              >
+                {filters.minStars.toLocaleString()}
+              </span>
+            )}
+          </label>
           <input
             type="range"
             min={0}
             max={10000}
-            step={100}
-            value={filters.minStars}
+            step={10}
+            value={Math.min(filters.minStars, 10000)}
             onChange={(e) =>
               onFiltersChange({ ...filters, minStars: +e.target.value })
             }
@@ -143,12 +191,12 @@ export default function Sidebar({
         </div>
 
         <div className="filter-group">
-          <label>Max Nodes: {filters.limit === 10000 ? '∞' : filters.limit}</label>
+          <label>Max Nodes: {filters.limit >= 1000000 ? '∞' : filters.limit.toLocaleString()}</label>
           <input
             type="range"
             min={50}
-            max={10000}
-            step={50}
+            max={1000000}
+            step={filters.limit < 1000 ? 50 : filters.limit < 10000 ? 500 : filters.limit < 100000 ? 5000 : 50000}
             value={filters.limit}
             onChange={(e) =>
               onFiltersChange({ ...filters, limit: +e.target.value })
@@ -312,6 +360,92 @@ export default function Sidebar({
             value={graphStyle.edgeWidthScale}
             onChange={(e) =>
               onStyleChange({ ...graphStyle, edgeWidthScale: +e.target.value })
+            }
+          />
+        </div>
+      </div>
+
+      {/* ── 3D Effects ────────────────────────────────── */}
+      <div className="sidebar-section">
+        <h3>3D Effects</h3>
+
+        <div className="filter-group">
+          <label>Bloom: {graphStyle.bloomStrength?.toFixed(1) ?? "1.5"}</label>
+          <input
+            type="range"
+            min={0}
+            max={4.0}
+            step={0.1}
+            value={graphStyle.bloomStrength ?? 1.5}
+            onChange={(e) =>
+              onStyleChange({ ...graphStyle, bloomStrength: +e.target.value })
+            }
+          />
+        </div>
+
+        <div className="filter-group">
+          <label>Bloom Radius: {(graphStyle.bloomRadius ?? 0.4).toFixed(1)}</label>
+          <input
+            type="range"
+            min={0}
+            max={2.0}
+            step={0.1}
+            value={graphStyle.bloomRadius ?? 0.4}
+            onChange={(e) =>
+              onStyleChange({ ...graphStyle, bloomRadius: +e.target.value })
+            }
+          />
+        </div>
+
+        <div className="filter-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={graphStyle.showParticles ?? true}
+              onChange={(e) =>
+                onStyleChange({ ...graphStyle, showParticles: e.target.checked })
+              }
+            />
+            Link Particles
+          </label>
+        </div>
+
+        <div className="filter-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={graphStyle.starField ?? true}
+              onChange={(e) =>
+                onStyleChange({ ...graphStyle, starField: e.target.checked })
+              }
+            />
+            Star Field Background
+          </label>
+        </div>
+
+        <div className="filter-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={graphStyle.autoOrbit ?? false}
+              onChange={(e) =>
+                onStyleChange({ ...graphStyle, autoOrbit: e.target.checked })
+              }
+            />
+            Auto Orbit Camera
+          </label>
+        </div>
+
+        <div className="filter-group">
+          <label>Fog: {((graphStyle.fogDensity ?? 0.0006) * 10000).toFixed(1)}</label>
+          <input
+            type="range"
+            min={0}
+            max={0.003}
+            step={0.0001}
+            value={graphStyle.fogDensity ?? 0.0006}
+            onChange={(e) =>
+              onStyleChange({ ...graphStyle, fogDensity: +e.target.value })
             }
           />
         </div>

@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Link } from "react-router-dom";
-import GraphView from "../components/GraphView";
+const GraphView3D = lazy(() => import("../components/GraphView3D"));
 import TableView from "../components/TableView";
 import Sidebar from "../components/Sidebar";
 import StatsModal from "../components/StatsModal";
@@ -16,7 +16,7 @@ export default function GraphPage() {
   const [filters, setFilters] = useState({
     types: ["author", "repo", "topic"],
     minStars: 0,
-    limit: 300,
+    limit: 500,
     language: "",
   });
   const [crawlerStatus, setCrawlerStatus] = useState({});
@@ -28,8 +28,17 @@ export default function GraphPage() {
     labelScale: 1.0,
     labelThreshold: 0.8,
     showLabels: true,
-    edgeOpacity: 0.35,
+    edgeOpacity: 0.25,
     edgeWidthScale: 1.0,
+    bloomStrength: 1.5,
+    bloomRadius: 0.4,
+    bloomThreshold: 0.1,
+    particleSpeed: 0.004,
+    particleCount: 1,
+    showParticles: true,
+    autoOrbit: false,
+    starField: true,
+    fogDensity: 0.0006,
   });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showStatsModal, setShowStatsModal] = useState(false);
@@ -91,8 +100,13 @@ export default function GraphPage() {
   const focusNode = useCallback(
     (node) => {
       if (node && graphRef.current && node.x != null) {
-        graphRef.current.centerAt(node.x, node.y, 600);
-        graphRef.current.zoom(3, 600);
+        const distance = 120;
+        const distRatio = 1 + distance / Math.hypot(node.x || 0, node.y || 0, node.z || 0);
+        graphRef.current.cameraPosition(
+          { x: (node.x || 0) * distRatio, y: (node.y || 0) * distRatio, z: (node.z || 0) * distRatio },
+          { x: node.x, y: node.y, z: node.z },
+          1200
+        );
       }
     },
     [graphRef]
@@ -168,9 +182,8 @@ export default function GraphPage() {
     setSearchResults([]);
     handleExpand(result.id);
     const node = graphData.nodes.find((n) => n.id === result.id);
-    if (node && graphRef.current) {
-      graphRef.current.centerAt(node.x, node.y, 1000);
-      graphRef.current.zoom(3, 1000);
+    if (node) {
+      focusNode(node);
       setSelectedNode(node);
     }
   };
@@ -279,13 +292,15 @@ export default function GraphPage() {
               </p>
             </div>
           ) : viewMode === "graph" ? (
-            <GraphView
-              graphData={graphData}
-              onNodeClick={handleNodeClick}
-              selectedNode={selectedNode}
-              graphRef={graphRef}
-              graphStyle={graphStyle}
-            />
+            <Suspense fallback={<div className="empty-state"><div className="empty-icon">◈</div><h2>Loading 3D Engine…</h2></div>}>
+              <GraphView3D
+                graphData={graphData}
+                onNodeClick={handleNodeClick}
+                selectedNode={selectedNode}
+                graphRef={graphRef}
+                graphStyle={graphStyle}
+              />
+            </Suspense>
           ) : (
             <TableView
               graphData={graphData}
