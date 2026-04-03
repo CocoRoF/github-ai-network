@@ -1157,6 +1157,26 @@ export default function GraphView3DLarge({
         if (!t) return;
         zoomToFitInternal(t.camera, t.controls, duration || 800, padding || 100);
       },
+      zoomIn: () => {
+        const t = threeRef.current;
+        if (!t) return;
+        const cam = t.camera;
+        const ctrl = t.controls;
+        const dir = cam.position.clone().sub(ctrl.target);
+        dir.multiplyScalar(0.65);
+        const dest = ctrl.target.clone().add(dir);
+        animateCamera(cam, ctrl, dest, ctrl.target, 400);
+      },
+      zoomOut: () => {
+        const t = threeRef.current;
+        if (!t) return;
+        const cam = t.camera;
+        const ctrl = t.controls;
+        const dir = cam.position.clone().sub(ctrl.target);
+        dir.multiplyScalar(1.5);
+        const dest = ctrl.target.clone().add(dir);
+        animateCamera(cam, ctrl, dest, ctrl.target, 400);
+      },
       scene: () => threeRef.current?.scene,
       renderer: () => threeRef.current?.renderer,
     };

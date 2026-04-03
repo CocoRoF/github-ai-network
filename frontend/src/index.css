@@ -143,6 +143,48 @@ body {
   display: none !important;
 }
 
+/* ── graph control buttons (top-right overlay) ───── */
+.graph-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 50;
+}
+.graph-ctrl-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(13, 17, 23, 0.7);
+  backdrop-filter: blur(8px);
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.graph-ctrl-btn:hover {
+  background: rgba(30, 40, 60, 0.85);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+.graph-ctrl-btn:active {
+  background: rgba(50, 60, 90, 0.9);
+}
+.graph-container:fullscreen {
+  background: #030810;
+}
+.graph-container:fullscreen .graph-controls {
+  top: 16px;
+  right: 16px;
+}
+
 /* node count indicator overlay */
 .node-count-overlay {
   position: absolute;
@@ -319,29 +361,21 @@ body {
   overflow-y: auto;
   height: 100%;
 }
-.sidebar-toggle {
-  position: absolute;
-  top: 12px;
-  right: -32px;
-  z-index: 100;
-  width: 24px;
-  height: 24px;
-  border-radius: 0 6px 6px 0;
+.sidebar-toggle-header {
+  margin-left: 8px;
+  padding: 4px 10px;
   border: 1px solid var(--border);
-  border-left: none;
-  background: var(--bg-secondary);
+  border-radius: 6px;
+  background: var(--bg-primary);
   color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.7;
-  transition: opacity 0.15s, background 0.15s;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
 }
-.sidebar-toggle:hover {
-  opacity: 1;
+.sidebar-toggle-header:hover {
   background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .sidebar-section {

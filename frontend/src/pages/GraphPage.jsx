@@ -44,6 +44,7 @@ export default function GraphPage() {
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [viewMode, setViewMode] = useState("graph");
   const graphRef = useRef();
+  const graphContainerRef = useRef(null);
   const searchTimeout = useRef(null);
 
   /* ── fetch sessions ───────────────────────────────── */
@@ -212,6 +213,13 @@ export default function GraphPage() {
               Table
             </button>
           </div>
+          <button
+            className="sidebar-toggle-header"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          >
+            {sidebarOpen ? "◂ Panel" : "▸ Panel"}
+          </button>
         </div>
 
         <div className="header-center">
@@ -276,11 +284,9 @@ export default function GraphPage() {
             graphStyle={graphStyle}
             onStyleChange={setGraphStyle}
             onStatsClick={() => setShowStatsModal(true)}
-            sidebarOpen={sidebarOpen}
-            onToggleSidebar={() => setSidebarOpen((v) => !v)}
           />
         </div>
-        <div className="graph-container">
+        <div className="graph-container" ref={graphContainerRef}>
           {graphData.nodes.length === 0 && !loading ? (
             <div className="empty-state">
               <div className="empty-icon">◈</div>
@@ -294,15 +300,47 @@ export default function GraphPage() {
               </p>
             </div>
           ) : viewMode === "graph" ? (
-            <Suspense fallback={<div className="empty-state"><div className="empty-icon">◈</div><h2>Loading 3D Engine…</h2></div>}>
-              <GraphView3DLarge
-                graphData={graphData}
-                onNodeClick={handleNodeClick}
-                selectedNode={selectedNode}
-                graphRef={graphRef}
-                graphStyle={graphStyle}
-              />
-            </Suspense>
+            <>
+              <Suspense fallback={<div className="empty-state"><div className="empty-icon">◈</div><h2>Loading 3D Engine…</h2></div>}>
+                <GraphView3DLarge
+                  graphData={graphData}
+                  onNodeClick={handleNodeClick}
+                  selectedNode={selectedNode}
+                  graphRef={graphRef}
+                  graphStyle={graphStyle}
+                />
+              </Suspense>
+              <div className="graph-controls">
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={() => graphRef.current?.zoomIn()}
+                  title="Zoom In"
+                >+</button>
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={() => graphRef.current?.zoomOut()}
+                  title="Zoom Out"
+                >−</button>
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={() => graphRef.current?.zoomToFit(800, 100)}
+                  title="Reset View"
+                >⌂</button>
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={() => {
+                    const el = graphContainerRef.current;
+                    if (!el) return;
+                    if (document.fullscreenElement) {
+                      document.exitFullscreen();
+                    } else {
+                      el.requestFullscreen();
+                    }
+                  }}
+                  title="Fullscreen"
+                >⛶</button>
+              </div>
+            </>
           ) : (
             <TableView
               graphData={graphData}
