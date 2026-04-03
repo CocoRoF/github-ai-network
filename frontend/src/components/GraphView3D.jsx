@@ -19,11 +19,13 @@ const LINK_COLORS = {
   forked_from: "#8888cc",
 };
 
-/* ── LOD thresholds ───────────────────────────────────── */
-const LOD_HIGH = 300;    // full sphere (16 segments)
-const LOD_MED = 1500;    // low-poly sphere (8 segments)
-const LOD_LOW = 8000;    // minimal sphere (4 segments)
-const LOD_POINT = 50000; // beyond this: disable custom objects entirely
+/* ── performance tier thresholds ──────────────────────── */
+const TIER_SMALL  = 500;    // full custom objects + labels + bloom + effects
+const TIER_MED    = 2000;   // custom objects, selective labels, bloom
+const TIER_LARGE  = 5000;   // ★ switch to built-in InstancedMesh (no custom objects)
+const TIER_HUGE   = 15000;  // no bloom, no fog, no particles, line-only links
+const TIER_MASSIVE = 50000; // ngraph engine, minimal rendering
+const LABEL_BUDGET = 80;    // max simultaneous sprite labels
 
 /* ── default style ────────────────────────────────────── */
 const DEFAULT_STYLE = {
@@ -44,12 +46,11 @@ const DEFAULT_STYLE = {
   fogDensity: 0.0006,
 };
 
-/* ── helper: create star field ────────────────────────── */
-function createStarField(count = 8000, radius = 6000) {
+/* ── helper: create star field (lightweight) ──────────── */
+function createStarField(count, radius) {
   const geo = new THREE.BufferGeometry();
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
-  const sizes = new Float32Array(count);
 
   for (let i = 0; i < count; i++) {
     const r = radius * (0.4 + Math.random() * 0.6);
@@ -60,16 +61,13 @@ function createStarField(count = 8000, radius = 6000) {
     positions[i * 3 + 2] = r * Math.cos(phi);
 
     const brightness = 0.5 + Math.random() * 0.5;
-    // slight blue/white tint
     colors[i * 3] = brightness * (0.8 + Math.random() * 0.2);
     colors[i * 3 + 1] = brightness * (0.85 + Math.random() * 0.15);
     colors[i * 3 + 2] = brightness;
-    sizes[i] = 0.5 + Math.random() * 2.0;
   }
 
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  geo.setAttribute("size", new THREE.BufferAttribute(sizes, 1));
 
   const mat = new THREE.PointsMaterial({
     size: 1.5,
@@ -84,30 +82,21 @@ function createStarField(count = 8000, radius = 6000) {
 }
 
 /* ── helper: create nebula clouds ─────────────────────── */
-function createNebula(count = 40, radius = 3000) {
+function createNebula(count, radius) {
   const group = new THREE.Group();
-  const textureLoader = new THREE.TextureLoader();
-
-  // procedural circle texture
   const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
+  canvas.width = 64;
+  canvas.height = 64;
   const ctx = canvas.getContext("2d");
-  const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
   gradient.addColorStop(0, "rgba(255,255,255,0.3)");
   gradient.addColorStop(0.4, "rgba(255,255,255,0.05)");
   gradient.addColorStop(1, "rgba(255,255,255,0)");
   ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 128, 128);
+  ctx.fillRect(0, 0, 64, 64);
   const circleTexture = new THREE.CanvasTexture(canvas);
 
-  const nebulaColors = [
-    new THREE.Color(0x1a1a3e),
-    new THREE.Color(0x1e3a5f),
-    new THREE.Color(0x2d1b4e),
-    new THREE.Color(0x0d2137),
-    new THREE.Color(0x1b2a4a),
-  ];
+  const nebulaColors = [0x1a1a3e, 0x1e3a5f, 0x2d1b4e, 0x0d2137, 0x1b2a4a];
 
   for (let i = 0; i < count; i++) {
     const r = radius * (0.3 + Math.random() * 0.7);
@@ -138,18 +127,16 @@ function createNebula(count = 40, radius = 3000) {
 
 /* ── geometry cache (LOD) ─────────────────────────────── */
 const geoCache = {
-  highSphere: null,
-  medSphere: null,
-  lowSphere: null,
+  _high: null, _med: null, _low: null,
   get(nodeCount) {
-    if (!this.highSphere) {
-      this.highSphere = new THREE.SphereGeometry(1, 16, 12);
-      this.medSphere = new THREE.SphereGeometry(1, 8, 6);
-      this.lowSphere = new THREE.SphereGeometry(1, 4, 3);
+    if (!this._high) {
+      this._high = new THREE.SphereGeometry(1, 16, 12);
+      this._med = new THREE.SphereGeometry(1, 8, 6);
+      this._low = new THREE.SphereGeometry(1, 4, 3);
     }
-    if (nodeCount < LOD_HIGH) return this.highSphere;
-    if (nodeCount < LOD_MED) return this.medSphere;
-    return this.lowSphere;
+    if (nodeCount < TIER_SMALL) return this._high;
+    if (nodeCount < TIER_MED) return this._med;
+    return this._low;
   },
 };
 
@@ -167,18 +154,24 @@ export default function GraphView3D({
   );
 
   const bloomPassRef = useRef(null);
-  const starFieldRef = useRef(null);
-  const nebulaRef = useRef(null);
   const orbitIntervalRef = useRef(null);
   const initDoneRef = useRef(false);
 
   const nodeCount = graphData.nodes.length;
-  const isLargeGraph = nodeCount > LOD_LOW;
-  const isMedGraph = nodeCount > LOD_MED;
-  const isMassive = nodeCount > 50000;
-  const isUltra = nodeCount > 200000;
+  const linkCount = graphData.links.length;
 
-  /* ── highlight set (BFS 2-hop for perf at scale) ────── */
+  /* ── performance tier flags ─────────────────────────── */
+  const useCustomObj   = nodeCount < TIER_LARGE;   // < 5K: custom 3D objects
+  const enableBloom    = nodeCount < TIER_HUGE;     // < 15K: bloom post-processing
+  const enableEffects  = nodeCount < TIER_HUGE;     // < 15K: star field + nebula + fog
+  const enableParticles = nodeCount < TIER_LARGE;   // < 5K: link particles
+  const useLinkWidth   = nodeCount < TIER_LARGE;    // < 5K: cylinder links (otherwise thin lines)
+  const useCurvedLinks = nodeCount < TIER_MED;      // < 2K: curved links
+  const enableDrag     = nodeCount < TIER_MASSIVE;  // < 50K: node drag
+  const enablePointer  = nodeCount < TIER_MASSIVE;  // < 50K: hover/click raycasting
+  const useNgraph      = nodeCount >= TIER_LARGE;   // >= 5K: ngraph engine (faster)
+
+  /* ── highlight set (BFS, adaptive depth) ────────────── */
   const highlightSet = useMemo(() => {
     if (!selectedNode) return null;
     const adj = new Map();
@@ -190,7 +183,7 @@ export default function GraphView3D({
       adj.get(s).push(t);
       adj.get(t).push(s);
     });
-    const maxHops = nodeCount > 10000 ? 1 : nodeCount > 3000 ? 2 : 3;
+    const maxHops = nodeCount > 10000 ? 1 : nodeCount > 3000 ? 1 : nodeCount > 500 ? 2 : 3;
     const visited = new Map();
     visited.set(selectedNode.id, 0);
     const queue = [selectedNode.id];
@@ -230,7 +223,21 @@ export default function GraphView3D({
     [valRange, style.nodeMinSize, style.nodeMaxSize]
   );
 
-  /* ── scene setup (bloom, stars, fog) ────────────────── */
+  /* ── label budget: pre-sort nodes by importance ─────── */
+  const labelNodeIds = useMemo(() => {
+    if (!useCustomObj || !style.showLabels) return new Set();
+    // always include all nodes for small graphs
+    if (nodeCount <= LABEL_BUDGET) {
+      return new Set(graphData.nodes.map((n) => n.id));
+    }
+    // sort by val descending, pick top LABEL_BUDGET
+    const sorted = [...graphData.nodes]
+      .sort((a, b) => (b.val || 1) - (a.val || 1))
+      .slice(0, LABEL_BUDGET);
+    return new Set(sorted.map((n) => n.id));
+  }, [graphData.nodes, nodeCount, useCustomObj, style.showLabels]);
+
+  /* ── scene setup (bloom, stars, fog) — adaptive ─────── */
   const handleEngineInit = useCallback(
     (fg) => {
       if (!fg || initDoneRef.current) return;
@@ -242,51 +249,53 @@ export default function GraphView3D({
       // background
       scene.background = new THREE.Color(0x030810);
 
-      // fog for depth
-      if (style.fogDensity > 0) {
+      // fog (only for smaller graphs)
+      if (enableEffects && style.fogDensity > 0) {
         scene.fog = new THREE.FogExp2(0x030810, style.fogDensity);
       }
 
-      // bloom post-processing
-      try {
-        const bloomPass = new UnrealBloomPass(
-          new THREE.Vector2(window.innerWidth, window.innerHeight),
-          style.bloomStrength,
-          style.bloomRadius,
-          style.bloomThreshold
-        );
-        const composer = fg.postProcessingComposer();
-        composer.addPass(bloomPass);
-        bloomPassRef.current = bloomPass;
-      } catch (e) {
-        console.warn("Bloom not available:", e);
+      // bloom (skip for huge graphs — saves fullscreen blur passes)
+      if (enableBloom) {
+        try {
+          const bloomRes = nodeCount > TIER_LARGE
+            ? new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2)
+            : new THREE.Vector2(window.innerWidth, window.innerHeight);
+          const bloomPass = new UnrealBloomPass(
+            bloomRes,
+            style.bloomStrength,
+            style.bloomRadius,
+            style.bloomThreshold
+          );
+          const composer = fg.postProcessingComposer();
+          composer.addPass(bloomPass);
+          bloomPassRef.current = bloomPass;
+        } catch (e) {
+          console.warn("Bloom not available:", e);
+        }
       }
 
-      // star field
-      if (style.starField) {
-        const stars = createStarField(10000, 8000);
-        scene.add(stars);
-        starFieldRef.current = stars;
+      // star field (reduced count for medium graphs)
+      if (enableEffects && style.starField) {
+        const starCount = nodeCount > TIER_MED ? 3000 : 8000;
+        scene.add(createStarField(starCount, 6000));
       }
 
-      // nebula
-      const nebula = createNebula(30, 5000);
-      scene.add(nebula);
-      nebulaRef.current = nebula;
+      // nebula (only for small-medium)
+      if (enableEffects && nodeCount < TIER_LARGE) {
+        scene.add(createNebula(20, 4000));
+      }
 
-      // ambient light tweak
-      const ambientLight = new THREE.AmbientLight(0x404060, 1.2);
-      scene.add(ambientLight);
-
-      const pointLight = new THREE.PointLight(0x5588ff, 0.5, 10000);
-      pointLight.position.set(0, 0, 0);
-      scene.add(pointLight);
+      // lighting
+      scene.add(new THREE.AmbientLight(0x404060, 1.2));
+      const pt = new THREE.PointLight(0x5588ff, 0.5, 10000);
+      pt.position.set(0, 0, 0);
+      scene.add(pt);
 
       // renderer tweaks
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.2;
     },
-    [style.bloomStrength, style.bloomRadius, style.bloomThreshold, style.starField, style.fogDensity]
+    [nodeCount, enableBloom, enableEffects, style.bloomStrength, style.bloomRadius, style.bloomThreshold, style.starField, style.fogDensity]
   );
 
   /* ── update bloom params on style change ────────────── */
@@ -321,7 +330,7 @@ export default function GraphView3D({
     };
   }, [style.autoOrbit, graphRef]);
 
-  /* ── node 3D object ─────────────────────────────────── */
+  /* ── node 3D object (only < TIER_LARGE nodes) ──────── */
   const nodeThreeObject = useCallback(
     (node) => {
       const size = getNodeSize(node);
@@ -333,7 +342,7 @@ export default function GraphView3D({
 
       const group = new THREE.Group();
 
-      // ── sphere (with LOD geometry) ─────
+      // sphere
       const geo = geoCache.get(nodeCount);
       const mat = new THREE.MeshStandardMaterial({
         color: new THREE.Color(color),
@@ -344,14 +353,13 @@ export default function GraphView3D({
         transparent: true,
         opacity: dimmed ? 0.06 : isInHighlight ? [1, 0.9, 0.6, 0.35][hopDist] ?? 0.35 : 0.85,
       });
-
       const mesh = new THREE.Mesh(geo, mat);
       mesh.scale.setScalar(size);
       group.add(mesh);
 
-      // ── glow ring for selected ─────
+      // glow ring for selected
       if (isSelected) {
-        const ringGeo = new THREE.RingGeometry(size * 1.3, size * 1.6, 32);
+        const ringGeo = new THREE.RingGeometry(size * 1.3, size * 1.6, 24);
         const ringMat = new THREE.MeshBasicMaterial({
           color: new THREE.Color(color),
           transparent: true,
@@ -359,20 +367,19 @@ export default function GraphView3D({
           side: THREE.DoubleSide,
           depthWrite: false,
         });
-        const ring = new THREE.Mesh(ringGeo, ringMat);
-        ring.lookAt(new THREE.Vector3(0, 0, 1)); // face camera approximately
-        group.add(ring);
+        group.add(new THREE.Mesh(ringGeo, ringMat));
       }
 
-      // ── label (only for important nodes or when zoomed) ─────
-      if (style.showLabels && !dimmed && !isMassive) {
-        const showLabel = isSelected || isInHighlight || size > 6 || nodeCount < 2000;
+      // label (budget-limited)
+      if (style.showLabels && !dimmed) {
+        const inBudget = labelNodeIds.has(node.id);
+        const showLabel = isSelected || (isInHighlight && hopDist <= 1) || inBudget;
         if (showLabel) {
           const label = node.type === "repo"
             ? (node.label || "").split("/").pop()
             : node.label || "";
           const sprite = new SpriteText(label);
-          sprite.color = dimmed ? "rgba(201,209,217,0.08)" : "rgba(201,209,217,0.9)";
+          sprite.color = "rgba(201,209,217,0.9)";
           sprite.textHeight = Math.max(size * 0.6 * style.labelScale, 1.5);
           sprite.position.y = -(size + sprite.textHeight * 0.6);
           sprite.fontWeight = isSelected ? "bold" : "normal";
@@ -384,7 +391,7 @@ export default function GraphView3D({
 
       return group;
     },
-    [getNodeSize, selectedNode, highlightSet, nodeCount, style.showLabels, style.labelScale, isMassive]
+    [getNodeSize, selectedNode, highlightSet, nodeCount, style.showLabels, style.labelScale, labelNodeIds]
   );
 
   /* ── link styling ───────────────────────────────────── */
@@ -394,17 +401,19 @@ export default function GraphView3D({
       if (!highlightSet) return base;
       const s = link.source?.id ?? link.source;
       const t = link.target?.id ?? link.target;
-      const sIn = highlightSet.has(s);
-      const tIn = highlightSet.has(t);
-      if (!sIn || !tIn) return "rgba(60,60,80,0.04)";
+      if (!highlightSet.has(s) || !highlightSet.has(t)) return "rgba(60,60,80,0.04)";
       return base;
     },
     [highlightSet]
   );
 
   const linkOpacity = useMemo(
-    () => (highlightSet ? style.edgeOpacity * 0.8 : style.edgeOpacity),
-    [style.edgeOpacity, highlightSet]
+    () => {
+      if (nodeCount > TIER_HUGE) return 0.06;
+      if (nodeCount > TIER_LARGE) return 0.1;
+      return highlightSet ? style.edgeOpacity * 0.8 : style.edgeOpacity;
+    },
+    [style.edgeOpacity, highlightSet, nodeCount]
   );
 
   const linkWidthFn = useCallback(
@@ -426,7 +435,6 @@ export default function GraphView3D({
         onNodeClick(null);
         return;
       }
-      // fly camera to node
       if (graphRef?.current) {
         const distance = 120;
         const distRatio = 1 + distance / Math.hypot(node.x || 0, node.y || 0, node.z || 0);
@@ -445,51 +453,57 @@ export default function GraphView3D({
     [onNodeClick, graphRef]
   );
 
-  /* ── performance: choose engine based on size ───────── */
-  const forceEngine = isMassive ? "ngraph" : "d3";
-  const warmupTicks = isUltra ? 200 : isMassive ? 100 : nodeCount > 10000 ? 50 : 0;
-  const cooldownTicks = isUltra ? 100 : isMassive ? 200 : nodeCount > 10000 ? 150 : 300;
-  const enablePointer = nodeCount < 200000;
-  const useCustomNodeObj = nodeCount < LOD_POINT;
+  /* ── force engine configuration ─────────────────────── */
+  const forceEngine = useNgraph ? "ngraph" : "d3";
+
+  // warmupTicks: run layout BEFORE first render (blocks briefly, but no jank after)
+  // cooldownTicks: stop layout after initial settle (no ongoing CPU drain)
+  const warmupTicks = useNgraph
+    ? (nodeCount > TIER_MASSIVE ? 150 : 100)
+    : (nodeCount > TIER_MED ? 80 : 0);
+  const cooldownTicks = useNgraph ? 0 : (nodeCount > TIER_MED ? 50 : 300);
+  const cooldownTime = nodeCount > TIER_LARGE ? 5000 : 15000;
 
   return (
     <ForceGraph3D
       graphData={graphData}
       /* ── node ─────────────── */
-      {...(useCustomNodeObj
-        ? { nodeThreeObject: nodeThreeObject, nodeThreeObjectExtend: false }
+      {...(useCustomObj
+        ? { nodeThreeObject, nodeThreeObjectExtend: false }
         : {
             nodeColor: (n) => {
               if (highlightSet && !highlightSet.has(n.id)) return "rgba(30,30,40,0.15)";
               return NODE_COLORS[n.type] || "#8b949e";
             },
             nodeOpacity: 0.85,
-            nodeResolution: isUltra ? 3 : 4,
+            nodeResolution: nodeCount > TIER_MASSIVE ? 3 : 4,
           }
       )}
       nodeVal="val"
-      nodeRelSize={isUltra ? 2 : 4}
-      nodeLabel={isUltra ? null : (n) => n.label}
+      nodeRelSize={nodeCount > TIER_MASSIVE ? 2 : 4}
+      nodeLabel={enablePointer ? (n) => n.label : null}
       /* ── link ─────────────── */
       linkColor={linkColor}
       linkOpacity={linkOpacity}
-      linkWidth={isUltra ? 0 : linkWidthFn}
-      linkDirectionalParticles={style.showParticles && !isMassive ? style.particleCount : 0}
+      linkWidth={useLinkWidth ? linkWidthFn : 0}
+      linkDirectionalParticles={enableParticles && style.showParticles ? style.particleCount : 0}
       linkDirectionalParticleSpeed={style.particleSpeed}
       linkDirectionalParticleWidth={1.0}
       linkDirectionalParticleColor={linkColor}
-      linkCurvature={isUltra ? 0 : 0.05}
+      linkCurvature={useCurvedLinks ? 0.05 : 0}
+      linkResolution={nodeCount > TIER_LARGE ? 3 : 6}
       /* ── interaction ──────── */
       onNodeClick={handleNodeClick}
       onBackgroundClick={() => onNodeClick(null)}
       enablePointerInteraction={enablePointer}
-      enableNodeDrag={nodeCount < 50000}
+      enableNodeDrag={enableDrag}
       /* ── engine ───────────── */
       forceEngine={forceEngine}
       warmupTicks={warmupTicks}
       cooldownTicks={cooldownTicks}
-      d3AlphaDecay={isMassive ? 0.05 : 0.02}
-      d3VelocityDecay={isMassive ? 0.5 : 0.3}
+      cooldownTime={cooldownTime}
+      d3AlphaDecay={nodeCount > TIER_HUGE ? 0.05 : 0.028}
+      d3VelocityDecay={nodeCount > TIER_HUGE ? 0.5 : 0.4}
       /* ── render ───────────── */
       backgroundColor="rgba(0,0,0,0)"
       showNavInfo={false}
@@ -498,15 +512,12 @@ export default function GraphView3D({
           graphRef.current.zoomToFit(800, 100);
         }
       }}
-      /* ── init scene ────────── */
       onNodeDragEnd={(node) => {
-        // pin node position after drag
         node.fx = node.x;
         node.fy = node.y;
         node.fz = node.z;
       }}
       ref={(el) => {
-        // forward ref + init
         if (graphRef) graphRef.current = el;
         if (el && !initDoneRef.current) {
           setTimeout(() => handleEngineInit(el), 100);

@@ -239,12 +239,14 @@ class GraphBuilder:
                             tgt = f"repo:{c.repository_id}"
                             if src in node_ids and tgt in node_ids:
                                 if (src, tgt) not in own_link_keys:
-                                    links.append({
+                                    link = {
                                         "source": src,
                                         "target": tgt,
                                         "type": "contributes",
-                                        "weight": min(c.contributions / 100, 3) if c.contributions else 0.5,
-                                    })
+                                    }
+                                    if not compact:
+                                        link["weight"] = min(c.contributions / 100, 3) if c.contributions else 0.5
+                                    links.append(link)
 
         # ── fork links ────────────────────────────────────
         if "repo" in node_types:
@@ -291,12 +293,14 @@ class GraphBuilder:
                     src = f"author:{row.aid1}"
                     tgt = f"author:{row.aid2}"
                     if src in node_ids and tgt in node_ids:
-                        links.append({
+                        link = {
                             "source": src,
                             "target": tgt,
                             "type": "coworker",
-                            "weight": min(row.shared / 3, 3),
-                        })
+                        }
+                        if not compact:
+                            link["weight"] = min(row.shared / 3, 3)
+                        links.append(link)
 
         # ── connection count → val boost (log-dampened) ────
         connection_map: dict[str, int] = {}
