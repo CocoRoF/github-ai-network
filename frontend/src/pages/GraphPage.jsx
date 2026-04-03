@@ -296,23 +296,13 @@ export default function GraphPage() {
             </div>
           ) : viewMode === "graph" ? (
             <Suspense fallback={<div className="empty-state"><div className="empty-icon">◈</div><h2>Loading 3D Engine…</h2></div>}>
-              {graphData.nodes.length >= 5000 ? (
-                <GraphView3DLarge
-                  graphData={graphData}
-                  onNodeClick={handleNodeClick}
-                  selectedNode={selectedNode}
-                  graphRef={graphRef}
-                  graphStyle={graphStyle}
-                />
-              ) : (
-                <GraphView3D
-                  graphData={graphData}
-                  onNodeClick={handleNodeClick}
-                  selectedNode={selectedNode}
-                  graphRef={graphRef}
-                  graphStyle={graphStyle}
-                />
-              )}
+              <GraphView3DLarge
+                graphData={graphData}
+                onNodeClick={handleNodeClick}
+                selectedNode={selectedNode}
+                graphRef={graphRef}
+                graphStyle={graphStyle}
+              />
             </Suspense>
           ) : (
             <TableView

@@ -1,15 +1,14 @@
 /**
- * GraphView3DLarge — Custom Three.js renderer for 5K–100K+ node graphs.
+ * GraphView3DLarge — Custom Three.js renderer for all graph sizes.
  *
  * Architecture:
  *   - 1 InstancedMesh  (all nodes → 1 draw call)
  *   - 1 LineSegments   (all edges → 1 draw call)
  *   - Web Worker        (force layout off main thread)
- *   - GPU picking–free  (Three.js raycaster on InstancedMesh)
  *
- * Total draw calls: 2  (vs 100K+ in react-force-graph-3d)
+ * Total draw calls: 2  (vs N in react-force-graph-3d)
  */
-import { useEffect, useRef, useMemo, useCallback } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -98,7 +97,7 @@ function animateCamera(camera, controls, targetPos, targetLookAt, duration) {
 
   function step() {
     const t = Math.min((performance.now() - start) / duration, 1);
-    const ease = t * (2 - t); // ease-out quad
+    const ease = t * (2 - t);
     camera.position.lerpVectors(startPos, endPos, ease);
     controls.target.lerpVectors(startTarget, endTarget, ease);
     controls.update();
@@ -121,25 +120,24 @@ export default function GraphView3DLarge({
     [graphStyle]
   );
 
-  // Persistent Three.js objects (survive graphData changes)
-  const threeRef = useRef(null); // { scene, camera, renderer, controls, composer, bloomPass, stars, lights }
-  const graphObjRef = useRef(null); // { nodesMesh, edgesMesh, selectionRing, worker }
+  // Persistent Three.js objects
+  const threeRef = useRef(null);
+  const graphObjRef = useRef(null);
   const dataRef = useRef({
     nodes: [],
     links: [],
     nodeIdToIndex: new Map(),
-    edgeNodeIndices: [],
+    edgeNodeIndices: [], // [[srcIdx, tgtIdx], ...]
+    edgeLinkIndices: [], // original link index for each valid edge
     positions: null,
     scales: null,
     settled: false,
   });
 
   // Refs for stable callbacks
-  const selectedNodeRef = useRef(null);
   const onNodeClickRef = useRef(onNodeClick);
   const styleRef = useRef(style);
   onNodeClickRef.current = onNodeClick;
-  selectedNodeRef.current = selectedNode;
   styleRef.current = style;
 
   /* ── adjacency + highlight set ─────────────────────── */
@@ -193,390 +191,6 @@ export default function GraphView3DLarge({
     return { min: isFinite(min) ? min : 1, max: isFinite(max) ? max : 1 };
   }, [graphData.nodes]);
 
-  /* ── Effect 1: Three.js scene setup (once) ─────────── */
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x030810);
-
-    const w = container.clientWidth || 800;
-    const h = container.clientHeight || 600;
-    const camera = new THREE.PerspectiveCamera(60, w / h, 1, 50000);
-    camera.position.set(0, 0, 800);
-
-    const renderer = new THREE.WebGLRenderer({
-      antialias: false, // skip AA for perf at 100K
-      powerPreference: "high-performance",
-    });
-    renderer.setSize(w, h);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    container.appendChild(renderer.domElement);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.12;
-    controls.rotateSpeed = 0.5;
-    controls.zoomSpeed = 1.2;
-    controls.minDistance = 10;
-    controls.maxDistance = 30000;
-
-    // Lights
-    const ambient = new THREE.AmbientLight(0x404060, 1.2);
-    scene.add(ambient);
-    const pointLight = new THREE.PointLight(0x5588ff, 0.5, 10000);
-    pointLight.position.set(0, 200, 0);
-    scene.add(pointLight);
-
-    // Bloom (optional, only for < 15K nodes)
-    let composer = null;
-    let bloomPass = null;
-
-    // Star field
-    const stars = createStarField(4000, 8000);
-    scene.add(stars);
-
-    // Selection ring (reusable, single mesh)
-    const ringGeo = new THREE.RingGeometry(1.3, 1.6, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.7,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const selectionRing = new THREE.Mesh(ringGeo, ringMat);
-    selectionRing.visible = false;
-    scene.add(selectionRing);
-
-    // Store refs
-    threeRef.current = {
-      scene,
-      camera,
-      renderer,
-      controls,
-      composer,
-      bloomPass,
-      stars,
-      ambient,
-      pointLight,
-      selectionRing,
-    };
-
-    // Animation loop
-    let animFrame;
-    function animate() {
-      animFrame = requestAnimationFrame(animate);
-      controls.update();
-
-      // Billboard selection ring toward camera
-      if (selectionRing.visible) {
-        selectionRing.quaternion.copy(camera.quaternion);
-      }
-
-      if (composer) {
-        composer.render();
-      } else {
-        renderer.render(scene, camera);
-      }
-    }
-    animate();
-
-    // Resize
-    const resizeObserver = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      if (width === 0 || height === 0) return;
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-      renderer.setSize(width, height);
-      if (composer) composer.setSize(width, height);
-    });
-    resizeObserver.observe(container);
-
-    // Cleanup
-    return () => {
-      cancelAnimationFrame(animFrame);
-      resizeObserver.disconnect();
-      controls.dispose();
-      disposeObject(stars);
-      disposeObject(selectionRing);
-      if (bloomPass) bloomPass.dispose();
-      if (composer) composer.dispose();
-      renderer.dispose();
-      if (container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement);
-      }
-      threeRef.current = null;
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /* ── Effect 2: Graph meshes + worker (on graphData) ── */
-  useEffect(() => {
-    const t = threeRef.current;
-    if (!t) return;
-    const { scene, camera, controls, renderer } = t;
-    const nc = graphData.nodes.length;
-    const ec = graphData.links.length;
-    if (nc === 0) return;
-
-    // Cleanup previous graph objects
-    const prev = graphObjRef.current;
-    if (prev) {
-      if (prev.nodesMesh) {
-        scene.remove(prev.nodesMesh);
-        disposeObject(prev.nodesMesh);
-      }
-      if (prev.edgesMesh) {
-        scene.remove(prev.edgesMesh);
-        disposeObject(prev.edgesMesh);
-      }
-      if (prev.worker) prev.worker.postMessage({ type: "stop" });
-    }
-
-    // Setup bloom for medium-large graphs (5K-15K)
-    if (nc < 15000 && !t.composer) {
-      try {
-        const s = styleRef.current;
-        const composer = new EffectComposer(renderer);
-        composer.addPass(new RenderPass(scene, camera));
-        const bloom = new UnrealBloomPass(
-          new THREE.Vector2(
-            renderer.domElement.width / 2,
-            renderer.domElement.height / 2
-          ),
-          s.bloomStrength * 0.6,
-          s.bloomRadius,
-          s.bloomThreshold
-        );
-        composer.addPass(bloom);
-        t.composer = composer;
-        t.bloomPass = bloom;
-      } catch (_) {
-        /* bloom not critical */
-      }
-    } else if (nc >= 15000 && t.composer) {
-      // Remove bloom for huge graphs
-      t.composer = null;
-      if (t.bloomPass) {
-        t.bloomPass.dispose();
-        t.bloomPass = null;
-      }
-    }
-
-    // Fog
-    const s = styleRef.current;
-    if (nc < 15000 && s.fogDensity > 0) {
-      scene.fog = new THREE.FogExp2(0x030810, s.fogDensity * 0.5);
-    } else {
-      scene.fog = null;
-    }
-
-    // Build data mappings
-    const nodeIdToIndex = new Map();
-    const nodes = graphData.nodes;
-    const links = graphData.links;
-    for (let i = 0; i < nc; i++) nodeIdToIndex.set(nodes[i].id, i);
-
-    const edgeNodeIndices = [];
-    for (let i = 0; i < ec; i++) {
-      const si = nodeIdToIndex.get(links[i].source?.id ?? links[i].source);
-      const ti = nodeIdToIndex.get(links[i].target?.id ?? links[i].target);
-      if (si !== undefined && ti !== undefined) {
-        edgeNodeIndices.push([si, ti]);
-      }
-    }
-
-    // Compute node sizes
-    const { min: vMin, max: vMax } = valRange;
-    const nodeScales = new Float32Array(nc);
-    for (let i = 0; i < nc; i++) {
-      const raw = nodes[i].val || 1;
-      const t2 = vMax > vMin ? (raw - vMin) / (vMax - vMin) : 0;
-      nodeScales[i] = s.nodeMinSize + t2 * (s.nodeMaxSize - s.nodeMinSize);
-    }
-
-    // Store in ref
-    dataRef.current = {
-      nodes,
-      links,
-      nodeIdToIndex,
-      edgeNodeIndices,
-      positions: null,
-      scales: nodeScales,
-      settled: false,
-    };
-
-    /* ── Create InstancedMesh for nodes ── */
-    const sphereGeo = new THREE.SphereGeometry(
-      1,
-      nc > 50000 ? 4 : nc > 15000 ? 6 : 8,
-      nc > 50000 ? 3 : nc > 15000 ? 4 : 6
-    );
-    const nodeMaterial = new THREE.MeshLambertMaterial({
-      emissive: 0x222244,
-      emissiveIntensity: 0.3,
-    });
-
-    const nodesMesh = new THREE.InstancedMesh(sphereGeo, nodeMaterial, nc);
-    nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-    // Initialize colors by node type
-    const tmpColor = new THREE.Color();
-    for (let i = 0; i < nc; i++) {
-      tmpColor.set(NODE_COLORS[nodes[i].type] || "#8b949e");
-      nodesMesh.setColorAt(i, tmpColor);
-    }
-    nodesMesh.instanceColor.needsUpdate = true;
-
-    // Initialize transforms (random positions until worker sends real ones)
-    const tmpMatrix = new THREE.Matrix4();
-    const tmpQuat = new THREE.Quaternion();
-    for (let i = 0; i < nc; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      const r = 100 + Math.random() * 200;
-      tmpMatrix.compose(
-        new THREE.Vector3(
-          r * Math.sin(phi) * Math.cos(theta),
-          r * Math.sin(phi) * Math.sin(theta),
-          r * Math.cos(phi)
-        ),
-        tmpQuat,
-        new THREE.Vector3(nodeScales[i], nodeScales[i], nodeScales[i])
-      );
-      nodesMesh.setMatrixAt(i, tmpMatrix);
-    }
-    nodesMesh.instanceMatrix.needsUpdate = true;
-    nodesMesh.computeBoundingSphere();
-    scene.add(nodesMesh);
-
-    /* ── Create LineSegments for edges ── */
-    const validEdgeCount = edgeNodeIndices.length;
-    const edgePositions = new Float32Array(validEdgeCount * 6);
-    const edgeColors = new Float32Array(validEdgeCount * 6);
-
-    // Initialize edge colors
-    const tmpC = new THREE.Color();
-    for (let i = 0; i < validEdgeCount; i++) {
-      // Find original link for this valid edge
-      const linkIdx = i; // edgeNodeIndices is built in order from links
-      tmpC.set(LINK_COLORS[links[linkIdx]?.type] || DEFAULT_LINK_COLOR);
-      edgeColors[i * 6 + 0] = tmpC.r;
-      edgeColors[i * 6 + 1] = tmpC.g;
-      edgeColors[i * 6 + 2] = tmpC.b;
-      edgeColors[i * 6 + 3] = tmpC.r;
-      edgeColors[i * 6 + 4] = tmpC.g;
-      edgeColors[i * 6 + 5] = tmpC.b;
-    }
-
-    const edgeGeo = new THREE.BufferGeometry();
-    edgeGeo.setAttribute(
-      "position",
-      new THREE.BufferAttribute(edgePositions, 3).setUsage(
-        THREE.DynamicDrawUsage
-      )
-    );
-    edgeGeo.setAttribute(
-      "color",
-      new THREE.BufferAttribute(edgeColors, 3).setUsage(
-        THREE.DynamicDrawUsage
-      )
-    );
-
-    const edgeMaterial = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: nc > 15000 ? 0.08 : nc > 5000 ? 0.12 : s.edgeOpacity,
-      depthWrite: false,
-    });
-
-    const edgesMesh = new THREE.LineSegments(edgeGeo, edgeMaterial);
-    scene.add(edgesMesh);
-
-    graphObjRef.current = { nodesMesh, edgesMesh, worker: null };
-
-    /* ── Start Web Worker ── */
-    const worker = new Worker(
-      new URL("../workers/layout.worker.js", import.meta.url),
-      { type: "module" }
-    );
-    graphObjRef.current.worker = worker;
-
-    // Reusable objects for position updates
-    const pos3 = new THREE.Vector3();
-    const scale3 = new THREE.Vector3();
-    const mat4 = new THREE.Matrix4();
-    const quat4 = new THREE.Quaternion();
-
-    worker.onmessage = (e) => {
-      const msg = e.data;
-
-      if (msg.type === "positions") {
-        const positions = new Float32Array(msg.positions);
-        dataRef.current.positions = positions;
-
-        // Update node instance matrices
-        for (let i = 0; i < nc; i++) {
-          pos3.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-          const sc = nodeScales[i];
-          scale3.set(sc, sc, sc);
-          mat4.compose(pos3, quat4, scale3);
-          nodesMesh.setMatrixAt(i, mat4);
-
-          // Also mutate node objects for compatibility with GraphPage.focusNode
-          nodes[i].x = positions[i * 3];
-          nodes[i].y = positions[i * 3 + 1];
-          nodes[i].z = positions[i * 3 + 2];
-        }
-        nodesMesh.instanceMatrix.needsUpdate = true;
-        nodesMesh.computeBoundingSphere();
-
-        // Update edge positions
-        for (let ei = 0; ei < validEdgeCount; ei++) {
-          const [si, ti] = edgeNodeIndices[ei];
-          edgePositions[ei * 6 + 0] = positions[si * 3];
-          edgePositions[ei * 6 + 1] = positions[si * 3 + 1];
-          edgePositions[ei * 6 + 2] = positions[si * 3 + 2];
-          edgePositions[ei * 6 + 3] = positions[ti * 3];
-          edgePositions[ei * 6 + 4] = positions[ti * 3 + 1];
-          edgePositions[ei * 6 + 5] = positions[ti * 3 + 2];
-        }
-        edgeGeo.attributes.position.needsUpdate = true;
-        edgeGeo.computeBoundingSphere();
-      }
-
-      if (msg.type === "settled") {
-        dataRef.current.settled = true;
-        // Zoom to fit once layout converges
-        zoomToFitInternal(camera, controls, 800, 100);
-      }
-    };
-
-    // Send graph to worker
-    worker.postMessage({
-      type: "init",
-      nodes: nodes.map((n) => ({ id: n.id })),
-      links: links.map((l) => ({
-        source: l.source?.id ?? l.source,
-        target: l.target?.id ?? l.target,
-      })),
-    });
-
-    // Cleanup
-    return () => {
-      worker.postMessage({ type: "stop" });
-      worker.terminate();
-      scene.remove(nodesMesh);
-      scene.remove(edgesMesh);
-      disposeObject(nodesMesh);
-      disposeObject(edgesMesh);
-      graphObjRef.current = null;
-    };
-  }, [graphData, valRange]); // eslint-disable-line react-hooks/exhaustive-deps
-
   /* ── zoomToFit helper ──────────────────────────────── */
   function zoomToFitInternal(camera, controls, duration, padding) {
     const positions = dataRef.current.positions;
@@ -618,6 +232,427 @@ export default function GraphView3DLarge({
     );
   }
 
+  /* ── Effect 1: Three.js scene setup (once) ─────────── */
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x030810);
+
+    const w = container.clientWidth || 800;
+    const h = container.clientHeight || 600;
+    const camera = new THREE.PerspectiveCamera(60, w / h, 1, 50000);
+    camera.position.set(0, 0, 800);
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      powerPreference: "high-performance",
+    });
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+
+    // Prevent CSS !important from .graph-container canvas from interfering
+    const canvas = renderer.domElement;
+    canvas.style.setProperty("display", "block", "important");
+    container.appendChild(canvas);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.12;
+    controls.rotateSpeed = 0.5;
+    controls.zoomSpeed = 1.2;
+    controls.minDistance = 10;
+    controls.maxDistance = 30000;
+
+    // Lights
+    const ambient = new THREE.AmbientLight(0x606080, 1.5);
+    scene.add(ambient);
+    const pointLight = new THREE.PointLight(0x5588ff, 0.8, 10000);
+    pointLight.position.set(200, 400, 300);
+    scene.add(pointLight);
+    const pointLight2 = new THREE.PointLight(0x8855ff, 0.4, 8000);
+    pointLight2.position.set(-300, -200, 200);
+    scene.add(pointLight2);
+
+    // Star field
+    const stars = createStarField(4000, 8000);
+    scene.add(stars);
+
+    // Selection ring (reusable)
+    const ringGeo = new THREE.RingGeometry(1.3, 1.6, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.7,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const selectionRing = new THREE.Mesh(ringGeo, ringMat);
+    selectionRing.visible = false;
+    scene.add(selectionRing);
+
+    // Store ALL three.js state in ref
+    const state = {
+      scene,
+      camera,
+      renderer,
+      controls,
+      stars,
+      ambient,
+      pointLight,
+      pointLight2,
+      selectionRing,
+      composer: null,
+      bloomPass: null,
+    };
+    threeRef.current = state;
+
+    // Animation loop — reads composer from ref, not closure
+    let animFrame;
+    function animate() {
+      animFrame = requestAnimationFrame(animate);
+      controls.update();
+
+      if (selectionRing.visible) {
+        selectionRing.quaternion.copy(camera.quaternion);
+      }
+
+      // Read composer from ref so it picks up changes from Effect 2
+      const comp = threeRef.current?.composer;
+      if (comp) {
+        comp.render();
+      } else {
+        renderer.render(scene, camera);
+      }
+    }
+    animate();
+
+    // Resize observer
+    const resizeObserver = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width === 0 || height === 0) return;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+      const comp = threeRef.current?.composer;
+      if (comp) comp.setSize(width, height);
+    });
+    resizeObserver.observe(container);
+
+    // Cleanup
+    return () => {
+      cancelAnimationFrame(animFrame);
+      resizeObserver.disconnect();
+      controls.dispose();
+      disposeObject(stars);
+      disposeObject(selectionRing);
+      if (state.bloomPass) state.bloomPass.dispose();
+      if (state.composer) {
+        state.composer.passes.forEach((p) => p.dispose?.());
+      }
+      renderer.dispose();
+      if (container.contains(canvas)) container.removeChild(canvas);
+      threeRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Effect 2: Graph meshes + worker (on graphData) ── */
+  useEffect(() => {
+    const t = threeRef.current;
+    if (!t) return;
+    const { scene, camera, controls, renderer } = t;
+    const nc = graphData.nodes.length;
+    const ec = graphData.links.length;
+    if (nc === 0) return;
+
+    // Cleanup previous graph objects
+    const prev = graphObjRef.current;
+    if (prev) {
+      if (prev.nodesMesh) {
+        scene.remove(prev.nodesMesh);
+        disposeObject(prev.nodesMesh);
+      }
+      if (prev.edgesMesh) {
+        scene.remove(prev.edgesMesh);
+        disposeObject(prev.edgesMesh);
+      }
+      if (prev.worker) {
+        prev.worker.postMessage({ type: "stop" });
+        prev.worker.terminate();
+      }
+    }
+
+    // Bloom (< 15K only)
+    if (nc < 15000 && !t.composer) {
+      try {
+        const s = styleRef.current;
+        const composer = new EffectComposer(renderer);
+        composer.addPass(new RenderPass(scene, camera));
+        const bloom = new UnrealBloomPass(
+          new THREE.Vector2(
+            renderer.domElement.width / 2,
+            renderer.domElement.height / 2
+          ),
+          s.bloomStrength * 0.6,
+          s.bloomRadius,
+          s.bloomThreshold
+        );
+        composer.addPass(bloom);
+        t.composer = composer;
+        t.bloomPass = bloom;
+      } catch (_) {}
+    } else if (nc >= 15000 && t.composer) {
+      t.composer = null;
+      if (t.bloomPass) {
+        t.bloomPass.dispose();
+        t.bloomPass = null;
+      }
+    }
+
+    // Fog
+    const s = styleRef.current;
+    if (nc < 15000 && s.fogDensity > 0) {
+      scene.fog = new THREE.FogExp2(0x030810, s.fogDensity * 0.5);
+    } else {
+      scene.fog = null;
+    }
+
+    // Build data mappings
+    const nodeIdToIndex = new Map();
+    const nodes = graphData.nodes;
+    const links = graphData.links;
+    for (let i = 0; i < nc; i++) nodeIdToIndex.set(nodes[i].id, i);
+
+    const edgeNodeIndices = [];
+    const edgeLinkIndices = []; // track original link index
+    for (let i = 0; i < ec; i++) {
+      const si = nodeIdToIndex.get(links[i].source?.id ?? links[i].source);
+      const ti = nodeIdToIndex.get(links[i].target?.id ?? links[i].target);
+      if (si !== undefined && ti !== undefined) {
+        edgeNodeIndices.push([si, ti]);
+        edgeLinkIndices.push(i); // store which original link this edge corresponds to
+      }
+    }
+
+    // Node sizes
+    const { min: vMin, max: vMax } = valRange;
+    const nodeScales = new Float32Array(nc);
+    for (let i = 0; i < nc; i++) {
+      const raw = nodes[i].val || 1;
+      const tt = vMax > vMin ? (raw - vMin) / (vMax - vMin) : 0;
+      nodeScales[i] = s.nodeMinSize + tt * (s.nodeMaxSize - s.nodeMinSize);
+    }
+
+    dataRef.current = {
+      nodes,
+      links,
+      nodeIdToIndex,
+      edgeNodeIndices,
+      edgeLinkIndices,
+      positions: null,
+      scales: nodeScales,
+      settled: false,
+    };
+
+    /* ── InstancedMesh for nodes ── */
+    const segments = nc > 50000 ? 4 : nc > 15000 ? 6 : 8;
+    const rings = nc > 50000 ? 3 : nc > 15000 ? 4 : 6;
+    const sphereGeo = new THREE.SphereGeometry(1, segments, rings);
+    const nodeMaterial = new THREE.MeshLambertMaterial({
+      emissive: 0x334466,
+      emissiveIntensity: 0.4,
+    });
+
+    const nodesMesh = new THREE.InstancedMesh(sphereGeo, nodeMaterial, nc);
+    nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+    // Node colors
+    const tmpColor = new THREE.Color();
+    for (let i = 0; i < nc; i++) {
+      tmpColor.set(NODE_COLORS[nodes[i].type] || "#8b949e");
+      nodesMesh.setColorAt(i, tmpColor);
+    }
+    nodesMesh.instanceColor.needsUpdate = true;
+
+    // Initial transforms (random sphere distribution)
+    const tmpMatrix = new THREE.Matrix4();
+    const tmpQuat = new THREE.Quaternion();
+    const tmpPos = new THREE.Vector3();
+    const tmpScale = new THREE.Vector3();
+    for (let i = 0; i < nc; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 100 + Math.random() * 300;
+      tmpPos.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta),
+        r * Math.cos(phi)
+      );
+      const sc = nodeScales[i];
+      tmpScale.set(sc, sc, sc);
+      tmpMatrix.compose(tmpPos, tmpQuat, tmpScale);
+      nodesMesh.setMatrixAt(i, tmpMatrix);
+    }
+    nodesMesh.instanceMatrix.needsUpdate = true;
+    nodesMesh.computeBoundingSphere();
+    scene.add(nodesMesh);
+
+    /* ── LineSegments for edges ── */
+    const validEdgeCount = edgeNodeIndices.length;
+    const edgePositions = new Float32Array(validEdgeCount * 6);
+    const edgeColors = new Float32Array(validEdgeCount * 6);
+
+    const tmpC = new THREE.Color();
+    for (let i = 0; i < validEdgeCount; i++) {
+      const origIdx = edgeLinkIndices[i]; // ← FIX: use correct link index
+      tmpC.set(LINK_COLORS[links[origIdx]?.type] || DEFAULT_LINK_COLOR);
+      edgeColors[i * 6 + 0] = tmpC.r;
+      edgeColors[i * 6 + 1] = tmpC.g;
+      edgeColors[i * 6 + 2] = tmpC.b;
+      edgeColors[i * 6 + 3] = tmpC.r;
+      edgeColors[i * 6 + 4] = tmpC.g;
+      edgeColors[i * 6 + 5] = tmpC.b;
+    }
+
+    const edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(edgePositions, 3).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+    edgeGeo.setAttribute(
+      "color",
+      new THREE.BufferAttribute(edgeColors, 3).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+
+    const edgeMaterial = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: nc > 15000 ? 0.08 : nc > 5000 ? 0.12 : s.edgeOpacity,
+      depthWrite: false,
+    });
+
+    const edgesMesh = new THREE.LineSegments(edgeGeo, edgeMaterial);
+    scene.add(edgesMesh);
+
+    graphObjRef.current = { nodesMesh, edgesMesh, worker: null };
+
+    /* ── Web Worker ── */
+    let worker;
+    try {
+      worker = new Worker(
+        new URL("../workers/layout.worker.js", import.meta.url),
+        { type: "module" }
+      );
+    } catch (err) {
+      console.error("Failed to create layout worker:", err);
+      // Fallback: zoomToFit on the random initial positions
+      const initPos = new Float32Array(nc * 3);
+      for (let i = 0; i < nc; i++) {
+        const m = new THREE.Matrix4();
+        nodesMesh.getMatrixAt(i, m);
+        const p = new THREE.Vector3();
+        p.setFromMatrixPosition(m);
+        initPos[i * 3] = p.x;
+        initPos[i * 3 + 1] = p.y;
+        initPos[i * 3 + 2] = p.z;
+        nodes[i].x = p.x;
+        nodes[i].y = p.y;
+        nodes[i].z = p.z;
+      }
+      dataRef.current.positions = initPos;
+      setTimeout(() => zoomToFitInternal(camera, controls, 800, 100), 300);
+      return;
+    }
+    graphObjRef.current.worker = worker;
+
+    worker.onerror = (err) => {
+      console.error("Layout worker error:", err);
+    };
+
+    // Reusable objects for position updates
+    const pos3 = new THREE.Vector3();
+    const scale3 = new THREE.Vector3();
+    const mat4 = new THREE.Matrix4();
+    const quat4 = new THREE.Quaternion();
+
+    worker.onmessage = (e) => {
+      const msg = e.data;
+
+      if (msg.type === "positions") {
+        const positions = new Float32Array(msg.positions);
+        dataRef.current.positions = positions;
+
+        // Update node instance matrices
+        for (let i = 0; i < nc; i++) {
+          pos3.set(
+            positions[i * 3],
+            positions[i * 3 + 1],
+            positions[i * 3 + 2]
+          );
+          const sc = nodeScales[i];
+          scale3.set(sc, sc, sc);
+          mat4.compose(pos3, quat4, scale3);
+          nodesMesh.setMatrixAt(i, mat4);
+
+          // Mutate node objects for GraphPage.focusNode compatibility
+          nodes[i].x = positions[i * 3];
+          nodes[i].y = positions[i * 3 + 1];
+          nodes[i].z = positions[i * 3 + 2];
+        }
+        nodesMesh.instanceMatrix.needsUpdate = true;
+        nodesMesh.computeBoundingSphere();
+
+        // Update edge positions
+        for (let ei = 0; ei < validEdgeCount; ei++) {
+          const [si, ti] = edgeNodeIndices[ei];
+          edgePositions[ei * 6 + 0] = positions[si * 3];
+          edgePositions[ei * 6 + 1] = positions[si * 3 + 1];
+          edgePositions[ei * 6 + 2] = positions[si * 3 + 2];
+          edgePositions[ei * 6 + 3] = positions[ti * 3];
+          edgePositions[ei * 6 + 4] = positions[ti * 3 + 1];
+          edgePositions[ei * 6 + 5] = positions[ti * 3 + 2];
+        }
+        edgeGeo.attributes.position.needsUpdate = true;
+        edgeGeo.computeBoundingSphere();
+      }
+
+      if (msg.type === "settled") {
+        dataRef.current.settled = true;
+        zoomToFitInternal(camera, controls, 800, 100);
+      }
+    };
+
+    // Send to worker
+    worker.postMessage({
+      type: "init",
+      nodes: nodes.map((n) => ({ id: n.id })),
+      links: links.map((l) => ({
+        source: l.source?.id ?? l.source,
+        target: l.target?.id ?? l.target,
+      })),
+    });
+
+    // Cleanup
+    return () => {
+      if (worker) {
+        worker.postMessage({ type: "stop" });
+        worker.terminate();
+      }
+      scene.remove(nodesMesh);
+      scene.remove(edgesMesh);
+      disposeObject(nodesMesh);
+      disposeObject(edgesMesh);
+      graphObjRef.current = null;
+    };
+  }, [graphData, valRange]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /* ── Effect 3: selection visual update ─────────────── */
   useEffect(() => {
     const gObj = graphObjRef.current;
@@ -626,8 +661,15 @@ export default function GraphView3DLarge({
 
     const { nodesMesh, edgesMesh } = gObj;
     const { selectionRing } = t;
-    const { nodes, nodeIdToIndex, edgeNodeIndices, links, scales, positions } =
-      dataRef.current;
+    const {
+      nodes,
+      links,
+      nodeIdToIndex,
+      edgeNodeIndices,
+      edgeLinkIndices,
+      scales,
+      positions,
+    } = dataRef.current;
     const nc = nodes.length;
     const hl = highlightSet;
     const tmpColor = new THREE.Color();
@@ -638,67 +680,68 @@ export default function GraphView3DLarge({
       const baseColor = NODE_COLORS[node.type] || "#8b949e";
 
       if (!hl) {
-        // No selection — normal colors
         tmpColor.set(baseColor);
       } else if (node.id === selectedNode?.id) {
-        // Selected node — bright
         tmpColor.set(baseColor).multiplyScalar(1.8);
         tmpColor.r = Math.min(tmpColor.r, 1);
         tmpColor.g = Math.min(tmpColor.g, 1);
         tmpColor.b = Math.min(tmpColor.b, 1);
       } else if (hl.has(node.id)) {
-        // Neighbor — full brightness
         const hop = hl.get(node.id);
         const fade = hop === 1 ? 1.0 : hop === 2 ? 0.7 : 0.5;
         tmpColor.set(baseColor).multiplyScalar(fade);
       } else {
-        // Dimmed — very dark
         tmpColor.setRGB(0.04, 0.04, 0.06);
       }
 
       nodesMesh.setColorAt(i, tmpColor);
     }
-    nodesMesh.instanceColor.needsUpdate = true;
+    if (nodesMesh.instanceColor) nodesMesh.instanceColor.needsUpdate = true;
 
-    // Update edge colors (dim non-highlighted edges)
+    // Update edge colors
     if (edgesMesh) {
       const edgeColorAttr = edgesMesh.geometry.attributes.color;
-      const colorArr = edgeColorAttr.array;
-      const validCount = edgeNodeIndices.length;
+      if (edgeColorAttr) {
+        const colorArr = edgeColorAttr.array;
+        const validCount = edgeNodeIndices.length;
 
-      for (let i = 0; i < validCount; i++) {
-        const link = links[i];
-        const s = link?.source?.id ?? link?.source;
-        const t2 = link?.target?.id ?? link?.target;
+        for (let i = 0; i < validCount; i++) {
+          const origIdx = edgeLinkIndices[i]; // ← FIX: correct link index
+          const link = links[origIdx];
+          const s = link?.source?.id ?? link?.source;
+          const t2 = link?.target?.id ?? link?.target;
 
-        if (!hl || (hl.has(s) && hl.has(t2))) {
-          tmpColor.set(LINK_COLORS[link?.type] || DEFAULT_LINK_COLOR);
-        } else {
-          tmpColor.setRGB(0.03, 0.03, 0.05);
+          if (!hl || (hl.has(s) && hl.has(t2))) {
+            tmpColor.set(LINK_COLORS[link?.type] || DEFAULT_LINK_COLOR);
+          } else {
+            tmpColor.setRGB(0.03, 0.03, 0.05);
+          }
+          colorArr[i * 6 + 0] = tmpColor.r;
+          colorArr[i * 6 + 1] = tmpColor.g;
+          colorArr[i * 6 + 2] = tmpColor.b;
+          colorArr[i * 6 + 3] = tmpColor.r;
+          colorArr[i * 6 + 4] = tmpColor.g;
+          colorArr[i * 6 + 5] = tmpColor.b;
         }
-        colorArr[i * 6 + 0] = tmpColor.r;
-        colorArr[i * 6 + 1] = tmpColor.g;
-        colorArr[i * 6 + 2] = tmpColor.b;
-        colorArr[i * 6 + 3] = tmpColor.r;
-        colorArr[i * 6 + 4] = tmpColor.g;
-        colorArr[i * 6 + 5] = tmpColor.b;
+        edgeColorAttr.needsUpdate = true;
       }
-      edgeColorAttr.needsUpdate = true;
     }
 
-    // Position selection ring
+    // Selection ring
     if (selectedNode && positions) {
       const idx = nodeIdToIndex.get(selectedNode.id);
       if (idx !== undefined && scales) {
-        const sx = positions[idx * 3];
-        const sy = positions[idx * 3 + 1];
-        const sz = positions[idx * 3 + 2];
+        selectionRing.position.set(
+          positions[idx * 3],
+          positions[idx * 3 + 1],
+          positions[idx * 3 + 2]
+        );
         const sc = scales[idx] * 1.6;
-        selectionRing.position.set(sx, sy, sz);
         selectionRing.scale.set(sc, sc, sc);
         selectionRing.visible = true;
-        const bc = NODE_COLORS[selectedNode.type] || "#ffffff";
-        selectionRing.material.color.set(bc);
+        selectionRing.material.color.set(
+          NODE_COLORS[selectedNode.type] || "#ffffff"
+        );
       }
     } else {
       selectionRing.visible = false;
@@ -756,7 +799,7 @@ export default function GraphView3DLarge({
       const dx = Math.abs(e.clientX - mouseDownPos.x);
       const dy = Math.abs(e.clientY - mouseDownPos.y);
       mouseDownPos = null;
-      if (dx + dy > 5) return; // drag, not click
+      if (dx + dy > 5) return; // drag
 
       const gObj = graphObjRef.current;
       if (!gObj?.nodesMesh) return;
@@ -767,11 +810,9 @@ export default function GraphView3DLarge({
       raycaster.setFromCamera(mouse, camera);
 
       const hits = raycaster.intersectObject(gObj.nodesMesh);
-      if (hits.length > 0) {
-        const nodeIndex = hits[0].instanceId;
-        const node = dataRef.current.nodes[nodeIndex];
+      if (hits.length > 0 && hits[0].instanceId != null) {
+        const node = dataRef.current.nodes[hits[0].instanceId];
         if (node) {
-          // Fly-to animation
           const nx = node.x || 0,
             ny = node.y || 0,
             nz = node.z || 0;
@@ -802,7 +843,7 @@ export default function GraphView3DLarge({
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ── Effect 7: Escape key to deselect ──────────────── */
+  /* ── Effect 7: Escape key ──────────────────────────── */
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === "Escape") onNodeClickRef.current(null);
