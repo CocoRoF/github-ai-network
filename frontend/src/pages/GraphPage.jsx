@@ -24,15 +24,15 @@ export default function GraphPage() {
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState({});
   const [graphStyle, setGraphStyle] = useState({
-    nodeMinSize: 2,
-    nodeMaxSize: 20,
+    nodeMinSize: 1,
+    nodeMaxSize: 15,
     labelScale: 1.0,
     labelThreshold: 0.8,
     showLabels: true,
-    edgeOpacity: 0.25,
+    edgeOpacity: 0.15,
     edgeWidthScale: 1.0,
-    bloomStrength: 1.5,
-    bloomRadius: 0.4,
+    bloomStrength: 0.6,
+    bloomRadius: 0.1,
     bloomThreshold: 0.1,
     particleSpeed: 0.004,
     particleCount: 1,

@@ -37,12 +37,12 @@ const LINK_COLORS = {
 const DEFAULT_LINK_COLOR = "#8b949e";
 
 const DEFAULT_STYLE = {
-  nodeMinSize: 2,
-  nodeMaxSize: 20,
-  edgeOpacity: 0.25,
-  bloomStrength: 1.8,
-  bloomRadius: 0.5,
-  bloomThreshold: 0.05,
+  nodeMinSize: 1,
+  nodeMaxSize: 15,
+  edgeOpacity: 0.15,
+  bloomStrength: 0.6,
+  bloomRadius: 0.1,
+  bloomThreshold: 0.1,
   starField: true,
   fogDensity: 0.0006,
 };
