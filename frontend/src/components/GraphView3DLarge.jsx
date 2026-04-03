@@ -880,7 +880,6 @@ export default function GraphView3DLarge({
 
       if (msg.type === "settled") {
         dataRef.current.settled = true;
-        zoomToFitInternal(camera, controls, 800, 100);
       }
     };
 

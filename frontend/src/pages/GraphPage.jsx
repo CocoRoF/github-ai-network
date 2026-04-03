@@ -183,11 +183,10 @@ export default function GraphPage() {
 
   const handleResultClick = (result) => {
     setSearchResults([]);
-    handleExpand(result.id);
     const node = graphData.nodes.find((n) => n.id === result.id);
     if (node) {
       focusNode(node);
-      setSelectedNode(node);
+      handleNodeClick(node);
     }
   };
 
