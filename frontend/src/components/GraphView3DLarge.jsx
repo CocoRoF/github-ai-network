@@ -47,6 +47,10 @@ const DEFAULT_STYLE = {
   fogDensity: 0.0006,
 };
 
+/* ── label constants ────────────────────────────────── */
+const MAX_LABELS = 150;
+const LABEL_UPDATE_MS = 250;
+
 /* ── helpers ─────────────────────────────────────────── */
 function createStarField(count, radius) {
   const geo = new THREE.BufferGeometry();
@@ -110,6 +114,136 @@ function animateCamera(camera, controls, targetPos, targetLookAt, duration) {
     if (t < 1) requestAnimationFrame(step);
   }
   requestAnimationFrame(step);
+}
+
+/* ── label helpers ──────────────────────────────────── */
+function getLabelText(node) {
+  const label = node.label || node.id || "";
+  if (node.type === "repo" && label.includes("/")) {
+    return label.split("/").pop();
+  }
+  return label.length > 30 ? label.substring(0, 27) + "…" : label;
+}
+
+function getOrCreateLabelTexture(cache, nodeId, text, color) {
+  if (cache.has(nodeId)) return cache.get(nodeId);
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const fontSize = 64;
+  ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  const metrics = ctx.measureText(text);
+  const pw = Math.ceil(metrics.width) + 32;
+  const ph = fontSize + 24;
+  canvas.width = pw;
+  canvas.height = ph;
+
+  // Re-set font after canvas resize
+  ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(0,0,0,0.95)";
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 2;
+  ctx.fillStyle = color;
+  ctx.fillText(text, pw / 2, ph / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const aspect = pw / ph;
+  const entry = { texture, aspect };
+  cache.set(nodeId, entry);
+
+  // Evict old entries if cache grows too large
+  if (cache.size > 500) {
+    const iter = cache.keys();
+    for (let i = 0; i < 100; i++) {
+      const key = iter.next().value;
+      const old = cache.get(key);
+      if (old?.texture) old.texture.dispose();
+      cache.delete(key);
+    }
+  }
+  return entry;
+}
+
+function updateLabels(state, data, style) {
+  const { labelSprites, labelTextureCache, camera } = state;
+  if (
+    !labelSprites ||
+    !data.positions ||
+    data.nodes.length === 0 ||
+    style.showLabels === false
+  ) {
+    if (labelSprites) for (const sp of labelSprites) sp.visible = false;
+    return;
+  }
+
+  const positions = data.positions;
+  const nodes = data.nodes;
+  const nc = nodes.length;
+  const camPos = camera.position;
+
+  // labelThreshold: 0..1 — maps to label visibility range
+  const threshold = style.labelThreshold ?? 0.8;
+  const maxDist = 150 + threshold * 3000;
+  const maxDistSq = maxDist * maxDist;
+
+  // Find candidate nodes within range
+  const candidates = [];
+  for (let i = 0; i < nc; i++) {
+    const dx = positions[i * 3] - camPos.x;
+    const dy = positions[i * 3 + 1] - camPos.y;
+    const dz = positions[i * 3 + 2] - camPos.z;
+    const distSq = dx * dx + dy * dy + dz * dz;
+    if (distSq < maxDistSq) {
+      candidates.push({ idx: i, distSq, val: nodes[i].val || 1 });
+    }
+  }
+
+  // Sort by priority: higher val + closer distance first
+  candidates.sort((a, b) => b.val / b.distSq - a.val / a.distSq);
+
+  const count = Math.min(candidates.length, MAX_LABELS);
+  const labelScale = style.labelScale ?? 1.0;
+
+  for (let i = 0; i < count; i++) {
+    const c = candidates[i];
+    const node = nodes[c.idx];
+    const sprite = labelSprites[i];
+
+    const labelText = getLabelText(node);
+    const color = NODE_COLORS_BRIGHT[node.type] || "#c0c8d0";
+    const entry = getOrCreateLabelTexture(
+      labelTextureCache,
+      node.id,
+      labelText,
+      color
+    );
+
+    if (sprite.material.map !== entry.texture) {
+      sprite.material.map = entry.texture;
+      sprite.material.needsUpdate = true;
+    }
+    sprite.material.opacity = 0.9;
+
+    // Position above the node
+    const nodeScale = data.scales?.[c.idx] || 5;
+    sprite.position.set(
+      positions[c.idx * 3],
+      positions[c.idx * 3 + 1] + nodeScale + 4,
+      positions[c.idx * 3 + 2]
+    );
+
+    const baseH = 5 * labelScale;
+    sprite.scale.set(baseH * entry.aspect, baseH, 1);
+    sprite.visible = true;
+  }
+
+  // Hide unused sprites
+  for (let i = count; i < labelSprites.length; i++) {
+    labelSprites[i].visible = false;
+  }
 }
 
 /* ── main component ──────────────────────────────────── */
@@ -305,6 +439,25 @@ export default function GraphView3DLarge({
     scene.add(ringGroup);
     const selectionRing = ringGroup;
 
+    // Label sprite pool
+    const labelGroup = new THREE.Group();
+    labelGroup.renderOrder = 999; // render on top
+    const labelSprites = [];
+    for (let i = 0; i < MAX_LABELS; i++) {
+      const mat = new THREE.SpriteMaterial({
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        sizeAttenuation: true,
+        opacity: 0,
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.visible = false;
+      labelGroup.add(sprite);
+      labelSprites.push(sprite);
+    }
+    scene.add(labelGroup);
+
     // Store ALL three.js state in ref
     const state = {
       scene,
@@ -313,6 +466,10 @@ export default function GraphView3DLarge({
       controls,
       stars,
       selectionRing,
+      labelGroup,
+      labelSprites,
+      labelTextureCache: new Map(),
+      labelLastUpdate: 0,
       composer: null,
       bloomPass: null,
     };
