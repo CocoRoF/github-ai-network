@@ -100,11 +100,13 @@ export default function GraphPage() {
   const focusNode = useCallback(
     (node) => {
       if (node && graphRef.current && node.x != null) {
-        const distance = 120;
-        const distRatio = 1 + distance / Math.hypot(node.x || 0, node.y || 0, node.z || 0);
+        const nx = node.x || 0, ny = node.y || 0, nz = node.z || 0;
+        const dist = Math.hypot(nx, ny, nz);
+        if (dist < 1) return; // 미배치 노드 — 카메라 이동 skip
+        const distRatio = 1 + 120 / dist;
         graphRef.current.cameraPosition(
-          { x: (node.x || 0) * distRatio, y: (node.y || 0) * distRatio, z: (node.z || 0) * distRatio },
-          { x: node.x, y: node.y, z: node.z },
+          { x: nx * distRatio, y: ny * distRatio, z: nz * distRatio },
+          { x: nx, y: ny, z: nz },
           1200
         );
       }
@@ -117,7 +119,7 @@ export default function GraphPage() {
       setSelectedNode(null);
       return;
     }
-    focusNode(node);
+    // 일반 클릭 시 카메라 이동은 GraphView3D.handleNodeClick에서 전담
     try {
       const r = await fetch(`${API}/graph/node/${encodeURIComponent(node.id)}`);
       const detail = await r.json();

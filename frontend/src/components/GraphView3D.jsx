@@ -20,12 +20,12 @@ const LINK_COLORS = {
 };
 
 /* ── performance tier thresholds ──────────────────────── */
-const TIER_SMALL  = 500;    // full custom objects + labels + bloom + effects
-const TIER_MED    = 2000;   // custom objects, selective labels, bloom
-const TIER_LARGE  = 2000;   // ★ switch to built-in InstancedMesh (no custom objects)
-const TIER_HUGE   = 15000;  // no bloom, no fog, no particles, line-only links
-const TIER_MASSIVE = 50000; // ngraph engine, minimal rendering
-const LABEL_BUDGET = 80;    // max simultaneous sprite labels
+const TIER_SMALL   = 500;    // full custom objects + all labels + curved links + effects
+const TIER_MED     = 2000;   // custom objects, selective labels, reduced effects
+const TIER_LARGE   = 5000;   // InstancedMesh + ngraph, no custom objects
+const TIER_HUGE    = 15000;  // no bloom, no fog, no particles, line-only links
+const TIER_MASSIVE = 50000;  // minimal rendering
+const LABEL_BUDGET = 80;     // max simultaneous sprite labels
 
 /* ── default style ────────────────────────────────────── */
 const DEFAULT_STYLE = {
@@ -125,6 +125,59 @@ function createNebula(count, radius) {
   return group;
 }
 
+/* ── helper: dispose Three.js object tree ─────────────── */
+function disposeObject(obj) {
+  if (!obj) return;
+  if (obj.geometry) obj.geometry.dispose();
+  if (obj.material) {
+    if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
+    else obj.material.dispose();
+  }
+  if (obj.children) [...obj.children].forEach(disposeObject);
+}
+
+/* ── helper: update a single node's visuals in-place ──── */
+function updateNodeVisuals(node, highlightSet, selectedNode) {
+  const obj = node.__threeObj;
+  if (!obj || !obj.children) return;
+
+  const mesh = obj.children.find((c) => c.isMesh && !c.userData?.isSelectionRing);
+  if (!mesh?.material) return;
+
+  const color = NODE_COLORS[node.type] || "#8b949e";
+  const isSelected = selectedNode?.id === node.id;
+  const hopDist = highlightSet?.get(node.id);
+  const isInHighlight = hopDist !== undefined;
+  const dimmed = highlightSet && !isInHighlight;
+
+  mesh.material.emissiveIntensity = dimmed
+    ? 0.02 : isSelected ? 1.2 : isInHighlight ? 0.6 : 0.35;
+  mesh.material.opacity = dimmed
+    ? 0.06 : isInHighlight ? ([1, 0.9, 0.6, 0.35][hopDist] ?? 0.35) : 0.85;
+
+  // selection ring
+  const existingRing = obj.children.find((c) => c.userData?.isSelectionRing);
+  if (isSelected && !existingRing) {
+    const size = mesh.scale.x;
+    const ringGeo = new THREE.RingGeometry(size * 1.3, size * 1.6, 24);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color), transparent: true, opacity: 0.6,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.userData.isSelectionRing = true;
+    obj.add(ring);
+  } else if (!isSelected && existingRing) {
+    obj.remove(existingRing);
+    existingRing.geometry.dispose();
+    existingRing.material.dispose();
+  }
+
+  // label visibility
+  const sprite = obj.children.find((c) => c.isSprite);
+  if (sprite) sprite.visible = !dimmed;
+}
+
 /* ── geometry cache (LOD) ─────────────────────────────── */
 const geoCache = {
   _high: null, _med: null, _low: null,
@@ -159,51 +212,55 @@ export default function GraphView3D({
   const hasZoomedRef = useRef(false);
   const selectedNodeRef = useRef(null);
   const highlightSetRef = useRef(null);
-
-  const nodeCount = graphData.nodes.length;
-  const linkCount = graphData.links.length;
-
-  /* ── performance tier flags ─────────────────────────── */
-  const useCustomObj   = nodeCount < TIER_LARGE;   // < 5K: custom 3D objects
-  const enableBloom    = nodeCount < TIER_HUGE;     // < 15K: bloom post-processing
-  const enableEffects  = nodeCount < TIER_HUGE;     // < 15K: star field + nebula + fog
-  const enableParticles = nodeCount < TIER_LARGE;   // < 5K: link particles
-  const useLinkWidth   = nodeCount < TIER_LARGE;    // < 5K: cylinder links (otherwise thin lines)
-  const useCurvedLinks = nodeCount < TIER_MED;      // < 2K: curved links
-  const enableDrag     = nodeCount < TIER_MASSIVE;  // < 50K: node drag
-  const enablePointer  = nodeCount < TIER_MASSIVE;  // < 50K: hover/click raycasting
-  const useNgraph      = nodeCount >= TIER_LARGE;   // >= 5K: ngraph engine (faster)
-
-  /* ── reset zoom flag when graphData changes ──────────── */
-  useEffect(() => {
-    hasZoomedRef.current = false;
-  }, [graphData]);
-
-  /* ── sync refs for stable callbacks ─────────────────── */
-  useEffect(() => {
-    selectedNodeRef.current = selectedNode;
-    highlightSetRef.current = highlightSet;
+  const prevHighlightRef = useRef(null);
+  const styleRef = useRef(style);
+  const nodeCountRef = useRef(0);
+  const mountedRef = useRef(false);
+  const sceneExtrasRef = useRef({
+    stars: null, nebula: null, pointLight: null, ambientLight: null,
   });
 
-  /* ── refresh visuals when selection changes (no recreation) */
+  styleRef.current = style;
+
+  const nodeCount = graphData.nodes.length;
+  nodeCountRef.current = nodeCount;
+
+  /* ── performance tier flags ─────────────────────────── */
+  const useCustomObj    = nodeCount < TIER_LARGE;    // < 5K: custom 3D objects
+  const enableParticles = nodeCount < TIER_MED;      // < 2K: link particles
+  const useLinkWidth    = nodeCount < TIER_LARGE;    // < 5K: cylinder links
+  const useCurvedLinks  = nodeCount < TIER_SMALL;    // < 500: curved links
+  const enableDrag      = nodeCount < TIER_MASSIVE;  // < 50K: node drag
+  const enablePointer   = nodeCount < TIER_MASSIVE;  // < 50K: raycasting
+  const useNgraph       = nodeCount >= TIER_LARGE;   // >= 5K: ngraph engine
+
+  /* ── reset scene on graphData change (runs FIRST) ───── */
   useEffect(() => {
+    hasZoomedRef.current = false;
+    initDoneRef.current = false;
+
     if (graphRef?.current) {
-      graphRef.current.refresh();
+      try {
+        const scene = graphRef.current.scene();
+        const extras = sceneExtrasRef.current;
+        if (extras.stars) { scene.remove(extras.stars); disposeObject(extras.stars); extras.stars = null; }
+        if (extras.nebula) { scene.remove(extras.nebula); disposeObject(extras.nebula); extras.nebula = null; }
+        if (extras.pointLight) { scene.remove(extras.pointLight); extras.pointLight = null; }
+        if (extras.ambientLight) { scene.remove(extras.ambientLight); extras.ambientLight = null; }
+        if (bloomPassRef.current) {
+          const composer = graphRef.current.postProcessingComposer();
+          const idx = composer.passes.indexOf(bloomPassRef.current);
+          if (idx > -1) composer.passes.splice(idx, 1);
+          bloomPassRef.current.dispose?.();
+          bloomPassRef.current = null;
+        }
+        scene.fog = null;
+      } catch (_) {}
     }
-  }, [selectedNode, graphRef]);
+  }, [graphData, graphRef]);
 
-  /* ── Escape key to deselect ─────────────────────────── */
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === "Escape") onNodeClick(null);
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onNodeClick]);
-
-  /* ── highlight set (BFS, adaptive depth) ────────────── */
-  const highlightSet = useMemo(() => {
-    if (!selectedNode) return null;
+  /* ── adjacency map (cached, rebuild only on links change) */
+  const adjacencyMap = useMemo(() => {
     const adj = new Map();
     graphData.links.forEach((l) => {
       const s = l.source?.id ?? l.source;
@@ -213,7 +270,17 @@ export default function GraphView3D({
       adj.get(s).push(t);
       adj.get(t).push(s);
     });
-    const maxHops = nodeCount > 10000 ? 1 : nodeCount > 3000 ? 1 : nodeCount > 500 ? 2 : 3;
+    return adj;
+  }, [graphData.links]);
+
+  /* ── highlight set (BFS only, uses cached adjacency) ── */
+  const maxHops = useMemo(
+    () => nodeCount > 3000 ? 1 : nodeCount > 500 ? 2 : 3,
+    [nodeCount]
+  );
+
+  const highlightSet = useMemo(() => {
+    if (!selectedNode) return null;
     const visited = new Map();
     visited.set(selectedNode.id, 0);
     const queue = [selectedNode.id];
@@ -221,7 +288,7 @@ export default function GraphView3D({
       const current = queue.shift();
       const dist = visited.get(current);
       if (dist >= maxHops) continue;
-      for (const neighbor of adj.get(current) || []) {
+      for (const neighbor of adjacencyMap.get(current) || []) {
         if (!visited.has(neighbor)) {
           visited.set(neighbor, dist + 1);
           queue.push(neighbor);
@@ -229,7 +296,22 @@ export default function GraphView3D({
       }
     }
     return visited;
-  }, [selectedNode, graphData.links, nodeCount]);
+  }, [selectedNode, adjacencyMap, maxHops]);
+
+  /* ── sync refs for stable callbacks ─────────────────── */
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+    highlightSetRef.current = highlightSet;
+  });
+
+  /* ── Escape key to deselect ─────────────────────────── */
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") onNodeClick(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onNodeClick]);
 
   /* ── val range for node sizing ──────────────────────── */
   const valRange = useMemo(() => {
@@ -256,11 +338,9 @@ export default function GraphView3D({
   /* ── label budget: pre-sort nodes by importance ─────── */
   const labelNodeIds = useMemo(() => {
     if (!useCustomObj || !style.showLabels) return new Set();
-    // always include all nodes for small graphs
     if (nodeCount <= LABEL_BUDGET) {
       return new Set(graphData.nodes.map((n) => n.id));
     }
-    // sort by val descending, pick top LABEL_BUDGET
     const sorted = [...graphData.nodes]
       .sort((a, b) => (b.val || 1) - (a.val || 1))
       .slice(0, LABEL_BUDGET);
@@ -275,26 +355,25 @@ export default function GraphView3D({
 
       const scene = fg.scene();
       const renderer = fg.renderer();
+      const nc = nodeCountRef.current;
+      const s = styleRef.current;
 
       // background
       scene.background = new THREE.Color(0x030810);
 
-      // fog (only for smaller graphs)
-      if (enableEffects && style.fogDensity > 0) {
-        scene.fog = new THREE.FogExp2(0x030810, style.fogDensity);
+      // fog (smaller graphs only)
+      if (nc < TIER_HUGE && s.fogDensity > 0) {
+        scene.fog = new THREE.FogExp2(0x030810, s.fogDensity);
       }
 
-      // bloom (skip for huge graphs — saves fullscreen blur passes)
-      if (enableBloom) {
+      // bloom (skip for huge graphs)
+      if (nc < TIER_HUGE) {
         try {
-          const bloomRes = nodeCount > TIER_LARGE
+          const bloomRes = nc > TIER_LARGE
             ? new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2)
             : new THREE.Vector2(window.innerWidth, window.innerHeight);
           const bloomPass = new UnrealBloomPass(
-            bloomRes,
-            style.bloomStrength,
-            style.bloomRadius,
-            style.bloomThreshold
+            bloomRes, s.bloomStrength, s.bloomRadius, s.bloomThreshold
           );
           const composer = fg.postProcessingComposer();
           composer.addPass(bloomPass);
@@ -304,29 +383,44 @@ export default function GraphView3D({
         }
       }
 
-      // star field (reduced count for medium graphs)
-      if (enableEffects && style.starField) {
-        const starCount = nodeCount > TIER_MED ? 3000 : 8000;
-        scene.add(createStarField(starCount, 6000));
+      // star field
+      if (nc < TIER_HUGE && s.starField) {
+        const starCount = nc > TIER_MED ? 3000 : 8000;
+        const stars = createStarField(starCount, 6000);
+        scene.add(stars);
+        sceneExtrasRef.current.stars = stars;
       }
 
-      // nebula (only for small-medium)
-      if (enableEffects && nodeCount < TIER_LARGE) {
-        scene.add(createNebula(20, 4000));
+      // nebula (small-medium only)
+      if (nc < TIER_LARGE) {
+        const nebula = createNebula(20, 4000);
+        scene.add(nebula);
+        sceneExtrasRef.current.nebula = nebula;
       }
 
       // lighting
-      scene.add(new THREE.AmbientLight(0x404060, 1.2));
+      const ambient = new THREE.AmbientLight(0x404060, 1.2);
+      scene.add(ambient);
+      sceneExtrasRef.current.ambientLight = ambient;
+
       const pt = new THREE.PointLight(0x5588ff, 0.5, 10000);
       pt.position.set(0, 0, 0);
       scene.add(pt);
+      sceneExtrasRef.current.pointLight = pt;
 
       // renderer tweaks
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.2;
     },
-    [nodeCount, enableBloom, enableEffects, style.bloomStrength, style.bloomRadius, style.bloomThreshold, style.starField, style.fogDensity]
+    [] // stable — reads from refs
   );
+
+  /* ── scene init via useEffect (runs AFTER reset effect) */
+  useEffect(() => {
+    if (graphRef?.current && !initDoneRef.current && nodeCountRef.current > 0) {
+      handleEngineInit(graphRef.current);
+    }
+  }, [graphData, handleEngineInit, graphRef]);
 
   /* ── update bloom params on style change ────────────── */
   useEffect(() => {
@@ -360,7 +454,60 @@ export default function GraphView3D({
     };
   }, [style.autoOrbit, graphRef]);
 
-  /* ── node 3D object (only < TIER_LARGE nodes) ──────── */
+  /* ── direct visual update on selection (node materials + link opacity) */
+  useEffect(() => {
+    const prevHl = prevHighlightRef.current;
+    const currHl = highlightSet;
+    prevHighlightRef.current = currHl;
+
+    /* — node material update (custom objects path) — */
+    if (useCustomObj) {
+      // Determine full vs delta update:
+      // null↔Map transitions need ALL nodes (dim state flips for every node)
+      // Map↔Map transitions only need the union of old + new highlight sets
+      const needFullNodeUpdate = (prevHl === null) !== (currHl === null);
+
+      if (needFullNodeUpdate) {
+        graphData.nodes.forEach((n) => updateNodeVisuals(n, currHl, selectedNode));
+      } else if (currHl) {
+        // delta: only nodes whose highlight status changed
+        const delta = new Set();
+        if (prevHl) prevHl.forEach((_, id) => delta.add(id));
+        currHl.forEach((_, id) => delta.add(id));
+        for (const node of graphData.nodes) {
+          if (delta.has(node.id)) updateNodeVisuals(node, currHl, selectedNode);
+        }
+      }
+      // both null → no visual change needed
+    }
+
+    /* — link opacity update (all paths) — */
+    const edgeOpacity = styleRef.current.edgeOpacity;
+    graphData.links.forEach((link) => {
+      const lineObj = link.__lineObj;
+      if (!lineObj?.material) return;
+
+      if (!currHl) {
+        lineObj.material.opacity = edgeOpacity;
+      } else {
+        const s = link.source?.id ?? link.source;
+        const t = link.target?.id ?? link.target;
+        lineObj.material.opacity = (currHl.has(s) && currHl.has(t))
+          ? edgeOpacity
+          : 0.02;
+      }
+    });
+  }, [selectedNode, highlightSet, graphData.nodes, graphData.links, useCustomObj]);
+
+  /* ── InstancedMesh path: refresh on selection for color update */
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
+    if (nodeCountRef.current >= TIER_LARGE && graphRef?.current) {
+      graphRef.current.refresh();
+    }
+  }, [selectedNode, graphRef]);
+
+  /* ── node 3D object (< TIER_LARGE only) ─────────────── */
   const nodeThreeObject = useCallback(
     (node) => {
       const size = getNodeSize(node);
@@ -383,7 +530,7 @@ export default function GraphView3D({
         roughness: 0.4,
         metalness: 0.3,
         transparent: true,
-        opacity: dimmed ? 0.06 : isInHighlight ? [1, 0.9, 0.6, 0.35][hopDist] ?? 0.35 : 0.85,
+        opacity: dimmed ? 0.06 : isInHighlight ? ([1, 0.9, 0.6, 0.35][hopDist] ?? 0.35) : 0.85,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.scale.setScalar(size);
@@ -399,7 +546,9 @@ export default function GraphView3D({
           side: THREE.DoubleSide,
           depthWrite: false,
         });
-        group.add(new THREE.Mesh(ringGeo, ringMat));
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.userData.isSelectionRing = true;
+        group.add(ring);
       }
 
       // label (budget-limited)
@@ -424,43 +573,41 @@ export default function GraphView3D({
       return group;
     },
     [getNodeSize, nodeCount, style.showLabels, style.labelScale, labelNodeIds]
+    // ★ NO selectedNode, NO highlightSet — reads from refs
   );
 
-  /* ── link styling ───────────────────────────────────── */
+  /* ── link styling — stable callbacks via refs ──────── */
   const linkColor = useCallback(
     (link) => {
       const base = LINK_COLORS[link.type] || "#8b949e";
-      if (!highlightSet) return base;
+      const hl = highlightSetRef.current;
+      if (!hl) return base;
       const s = link.source?.id ?? link.source;
       const t = link.target?.id ?? link.target;
-      if (!highlightSet.has(s) || !highlightSet.has(t)) return "rgba(60,60,80,0.04)";
+      if (!hl.has(s) || !hl.has(t)) return "rgba(60,60,80,0.04)";
       return base;
     },
-    [highlightSet]
+    [] // stable — reads from ref
   );
 
   const linkOpacity = useMemo(
     () => {
       if (nodeCount > TIER_HUGE) return 0.06;
       if (nodeCount > TIER_LARGE) return 0.1;
-      return highlightSet ? style.edgeOpacity * 0.8 : style.edgeOpacity;
+      return style.edgeOpacity;
     },
-    [style.edgeOpacity, highlightSet, nodeCount]
+    [style.edgeOpacity, nodeCount]
   );
 
   const linkWidthFn = useCallback(
     (link) => {
-      const base = Math.max((link.weight || 0.5) * style.edgeWidthScale * 0.5, 0);
-      if (!highlightSet) return base;
-      const s = link.source?.id ?? link.source;
-      const t = link.target?.id ?? link.target;
-      if (!highlightSet.has(s) || !highlightSet.has(t)) return 0;
-      return base * 1.5;
+      const s = styleRef.current;
+      return Math.max((link.weight || 0.5) * s.edgeWidthScale * 0.5, 0.15);
     },
-    [style.edgeWidthScale, highlightSet]
+    [] // stable — dim/highlight handled via material opacity in selection effect
   );
 
-  /* ── node click: fly-to animation ───────────────────── */
+  /* ── node click: fly-to animation (division-by-zero safe) */
   const handleNodeClick = useCallback(
     (node) => {
       if (!node) {
@@ -468,17 +615,16 @@ export default function GraphView3D({
         return;
       }
       if (graphRef?.current) {
-        const distance = 120;
-        const distRatio = 1 + distance / Math.hypot(node.x || 0, node.y || 0, node.z || 0);
-        graphRef.current.cameraPosition(
-          {
-            x: (node.x || 0) * distRatio,
-            y: (node.y || 0) * distRatio,
-            z: (node.z || 0) * distRatio,
-          },
-          { x: node.x, y: node.y, z: node.z },
-          1200
-        );
+        const nx = node.x || 0, ny = node.y || 0, nz = node.z || 0;
+        const dist = Math.hypot(nx, ny, nz);
+        if (dist > 1) {
+          const distRatio = 1 + 120 / dist;
+          graphRef.current.cameraPosition(
+            { x: nx * distRatio, y: ny * distRatio, z: nz * distRatio },
+            { x: nx, y: ny, z: nz },
+            1200
+          );
+        }
       }
       onNodeClick(node);
     },
@@ -488,9 +634,11 @@ export default function GraphView3D({
   /* ── force engine configuration ─────────────────────── */
   const forceEngine = useNgraph ? "ngraph" : "d3";
 
+  // d3: min 30 ticks so nodes displace from origin before first render
   const warmupTicks = useNgraph
     ? (nodeCount > TIER_MASSIVE ? 150 : 100)
-    : (nodeCount > TIER_MED ? 60 : 0);
+    : Math.max(Math.min(Math.floor(nodeCount * 0.1), 100), 30);
+
   const cooldownTicks = useNgraph ? 0 : (nodeCount > TIER_MED ? 40 : 200);
   const cooldownTime = nodeCount > TIER_LARGE ? 3000 : 8000;
 
@@ -505,15 +653,47 @@ export default function GraphView3D({
       if (hl && !hl.has(n.id)) return "rgba(30,30,40,0.15)";
       return NODE_COLORS[n.type] || "#8b949e";
     },
-    []
+    [] // stable — reads from ref
   );
 
   const handleEngineStop = useCallback(() => {
-    if (graphRef?.current && nodeCount > 0 && !hasZoomedRef.current) {
+    if (graphRef?.current && nodeCountRef.current > 0 && !hasZoomedRef.current) {
       hasZoomedRef.current = true;
       graphRef.current.zoomToFit(800, 100);
     }
-  }, [graphRef, nodeCount]);
+  }, [graphRef]); // stable — reads nodeCount from ref
+
+  const handleNodeDragEnd = useCallback((node) => {
+    node.fx = node.x;
+    node.fy = node.y;
+    node.fz = node.z;
+  }, []);
+
+  const fgRefCallback = useCallback((el) => {
+    if (graphRef) graphRef.current = el;
+  }, [graphRef]);
+
+  /* ── cleanup on unmount ─────────────────────────────── */
+  useEffect(() => {
+    return () => {
+      initDoneRef.current = false;
+      if (bloomPassRef.current) {
+        bloomPassRef.current.dispose?.();
+        bloomPassRef.current = null;
+      }
+      if (orbitIntervalRef.current) {
+        clearInterval(orbitIntervalRef.current);
+        orbitIntervalRef.current = null;
+      }
+      const extras = sceneExtrasRef.current;
+      Object.keys(extras).forEach((key) => {
+        if (extras[key]) {
+          disposeObject(extras[key]);
+          extras[key] = null;
+        }
+      });
+    };
+  }, []);
 
   return (
     <ForceGraph3D
@@ -556,17 +736,8 @@ export default function GraphView3D({
       backgroundColor="rgba(0,0,0,0)"
       showNavInfo={false}
       onEngineStop={handleEngineStop}
-      onNodeDragEnd={(node) => {
-        node.fx = node.x;
-        node.fy = node.y;
-        node.fz = node.z;
-      }}
-      ref={(el) => {
-        if (graphRef) graphRef.current = el;
-        if (el && !initDoneRef.current) {
-          setTimeout(() => handleEngineInit(el), 100);
-        }
-      }}
+      onNodeDragEnd={handleNodeDragEnd}
+      ref={fgRefCallback}
     />
   );
 }
