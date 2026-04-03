@@ -7,7 +7,7 @@ build/
 *.egg
 .venv/
 venv/
-.claude/
+.claude
 # Node
 node_modules/
 frontend/dist/
