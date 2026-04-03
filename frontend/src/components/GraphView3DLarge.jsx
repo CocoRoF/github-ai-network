@@ -21,6 +21,12 @@ const NODE_COLORS = {
   repo: "#3fb950",
   topic: "#d29922",
 };
+// Brighter versions for highlight glow
+const NODE_COLORS_BRIGHT = {
+  author: "#9dcfff",
+  repo: "#7ee89a",
+  topic: "#f0c45a",
+};
 const LINK_COLORS = {
   owns: "#58a6ff",
   contributes: "#8b949e",
@@ -34,9 +40,9 @@ const DEFAULT_STYLE = {
   nodeMinSize: 2,
   nodeMaxSize: 20,
   edgeOpacity: 0.25,
-  bloomStrength: 1.5,
-  bloomRadius: 0.4,
-  bloomThreshold: 0.1,
+  bloomStrength: 1.8,
+  bloomRadius: 0.5,
+  bloomThreshold: 0.05,
   starField: true,
   fogDensity: 0.0006,
 };
@@ -155,10 +161,8 @@ export default function GraphView3DLarge({
   }, [graphData.links]);
 
   const nodeCount = graphData.nodes.length;
-  const maxHops = useMemo(
-    () => (nodeCount > 3000 ? 1 : nodeCount > 500 ? 2 : 3),
-    [nodeCount]
-  );
+  // Always 3 hops for strong visual context
+  const maxHops = 3;
 
   const highlightSet = useMemo(() => {
     if (!selectedNode) return null;
@@ -267,32 +271,49 @@ export default function GraphView3DLarge({
     controls.minDistance = 10;
     controls.maxDistance = 30000;
 
-    // Lights
-    const ambient = new THREE.AmbientLight(0x606080, 1.5);
+    // Lights — rich multi-source lighting for depth perception
+    const ambient = new THREE.AmbientLight(0x303050, 2.0);
     scene.add(ambient);
-    const pointLight = new THREE.PointLight(0x5588ff, 0.8, 10000);
-    pointLight.position.set(200, 400, 300);
-    scene.add(pointLight);
-    const pointLight2 = new THREE.PointLight(0x8855ff, 0.4, 8000);
-    pointLight2.position.set(-300, -200, 200);
-    scene.add(pointLight2);
+    const keyLight = new THREE.DirectionalLight(0x6699cc, 1.2);
+    keyLight.position.set(300, 500, 400);
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0x445588, 0.6);
+    fillLight.position.set(-400, -200, 300);
+    scene.add(fillLight);
+    const rimLight = new THREE.PointLight(0x8866ff, 0.8, 12000);
+    rimLight.position.set(0, -300, -500);
+    scene.add(rimLight);
 
     // Star field
     const stars = createStarField(4000, 8000);
     scene.add(stars);
 
-    // Selection ring (reusable)
-    const ringGeo = new THREE.RingGeometry(1.3, 1.6, 32);
+    // Selection ring — double ring for stronger visual
+    const ringGroup = new THREE.Group();
+    const ringGeo = new THREE.RingGeometry(1.2, 1.5, 48);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.9,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    const selectionRing = new THREE.Mesh(ringGeo, ringMat);
-    selectionRing.visible = false;
-    scene.add(selectionRing);
+    const ring1 = new THREE.Mesh(ringGeo, ringMat);
+    ringGroup.add(ring1);
+    // Outer glow ring
+    const outerRingGeo = new THREE.RingGeometry(1.6, 2.2, 48);
+    const outerRingMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const ring2 = new THREE.Mesh(outerRingGeo, outerRingMat);
+    ringGroup.add(ring2);
+    ringGroup.visible = false;
+    scene.add(ringGroup);
+    const selectionRing = ringGroup;
 
     // Store ALL three.js state in ref
     const state = {
@@ -301,9 +322,6 @@ export default function GraphView3DLarge({
       renderer,
       controls,
       stars,
-      ambient,
-      pointLight,
-      pointLight2,
       selectionRing,
       composer: null,
       bloomPass: null,
@@ -317,6 +335,7 @@ export default function GraphView3DLarge({
       controls.update();
 
       if (selectionRing.visible) {
+        // Billboard: face the camera
         selectionRing.quaternion.copy(camera.quaternion);
       }
 
@@ -349,6 +368,7 @@ export default function GraphView3DLarge({
       controls.dispose();
       disposeObject(stars);
       disposeObject(selectionRing);
+      selectionRing.children.forEach((c) => disposeObject(c));
       if (state.bloomPass) state.bloomPass.dispose();
       if (state.composer) {
         state.composer.passes.forEach((p) => p.dispose?.());
@@ -385,18 +405,19 @@ export default function GraphView3DLarge({
       }
     }
 
-    // Bloom (< 15K only)
-    if (nc < 15000 && !t.composer) {
+    // Bloom (< 20K — wider range for visual quality)
+    if (nc < 20000 && !t.composer) {
       try {
         const s = styleRef.current;
         const composer = new EffectComposer(renderer);
         composer.addPass(new RenderPass(scene, camera));
+        const bloomRes = nc > 10000 ? 2 : 1.5;
         const bloom = new UnrealBloomPass(
           new THREE.Vector2(
-            renderer.domElement.width / 2,
-            renderer.domElement.height / 2
+            renderer.domElement.width / bloomRes,
+            renderer.domElement.height / bloomRes
           ),
-          s.bloomStrength * 0.6,
+          s.bloomStrength,
           s.bloomRadius,
           s.bloomThreshold
         );
@@ -404,7 +425,7 @@ export default function GraphView3DLarge({
         t.composer = composer;
         t.bloomPass = bloom;
       } catch (_) {}
-    } else if (nc >= 15000 && t.composer) {
+    } else if (nc >= 20000 && t.composer) {
       t.composer = null;
       if (t.bloomPass) {
         t.bloomPass.dispose();
@@ -458,12 +479,15 @@ export default function GraphView3DLarge({
     };
 
     /* ── InstancedMesh for nodes ── */
-    const segments = nc > 50000 ? 4 : nc > 15000 ? 6 : 8;
-    const rings = nc > 50000 ? 3 : nc > 15000 ? 4 : 6;
+    const segments = nc > 50000 ? 6 : nc > 15000 ? 8 : 12;
+    const rings = nc > 50000 ? 4 : nc > 15000 ? 6 : 8;
     const sphereGeo = new THREE.SphereGeometry(1, segments, rings);
-    const nodeMaterial = new THREE.MeshLambertMaterial({
-      emissive: 0x334466,
-      emissiveIntensity: 0.4,
+    const nodeMaterial = new THREE.MeshStandardMaterial({
+      roughness: 0.35,
+      metalness: 0.15,
+      emissive: 0x446688,
+      emissiveIntensity: 0.5,
+      envMapIntensity: 0.3,
     });
 
     const nodesMesh = new THREE.InstancedMesh(sphereGeo, nodeMaterial, nc);
@@ -674,31 +698,52 @@ export default function GraphView3DLarge({
     const hl = highlightSet;
     const tmpColor = new THREE.Color();
 
-    // Update node colors
+    // Update node colors with powerful 3-hop highlight gradient
+    const brightTmp = new THREE.Color();
     for (let i = 0; i < nc; i++) {
       const node = nodes[i];
       const baseColor = NODE_COLORS[node.type] || "#8b949e";
+      const brightColor = NODE_COLORS_BRIGHT[node.type] || "#c0c8d0";
 
       if (!hl) {
+        // Normal state — vivid type colors
         tmpColor.set(baseColor);
       } else if (node.id === selectedNode?.id) {
-        tmpColor.set(baseColor).multiplyScalar(1.8);
-        tmpColor.r = Math.min(tmpColor.r, 1);
-        tmpColor.g = Math.min(tmpColor.g, 1);
-        tmpColor.b = Math.min(tmpColor.b, 1);
+        // Selected — near-white bright glow
+        tmpColor.set(brightColor);
+        brightTmp.setRGB(1, 1, 1);
+        tmpColor.lerp(brightTmp, 0.5); // blend toward white
       } else if (hl.has(node.id)) {
         const hop = hl.get(node.id);
-        const fade = hop === 1 ? 1.0 : hop === 2 ? 0.7 : 0.5;
-        tmpColor.set(baseColor).multiplyScalar(fade);
+        if (hop === 1) {
+          // Hop 1 — bright vivid color
+          tmpColor.set(brightColor);
+        } else if (hop === 2) {
+          // Hop 2 — medium bright
+          tmpColor.set(baseColor);
+          brightTmp.set(brightColor);
+          tmpColor.lerp(brightTmp, 0.4);
+        } else {
+          // Hop 3 — slightly brighter than normal
+          tmpColor.set(baseColor).multiplyScalar(0.7);
+        }
       } else {
-        tmpColor.setRGB(0.04, 0.04, 0.06);
+        // Dimmed — visible but subdued (not invisible)
+        tmpColor.set(baseColor).multiplyScalar(0.12);
       }
 
       nodesMesh.setColorAt(i, tmpColor);
     }
     if (nodesMesh.instanceColor) nodesMesh.instanceColor.needsUpdate = true;
 
-    // Update edge colors
+    // Update node material emissive based on selection state
+    if (hl) {
+      nodesMesh.material.emissiveIntensity = 0.8;
+    } else {
+      nodesMesh.material.emissiveIntensity = 0.5;
+    }
+
+    // Update edge colors with 3-hop gradient
     if (edgesMesh) {
       const edgeColorAttr = edgesMesh.geometry.attributes.color;
       if (edgeColorAttr) {
@@ -706,15 +751,31 @@ export default function GraphView3DLarge({
         const validCount = edgeNodeIndices.length;
 
         for (let i = 0; i < validCount; i++) {
-          const origIdx = edgeLinkIndices[i]; // ← FIX: correct link index
+          const origIdx = edgeLinkIndices[i];
           const link = links[origIdx];
-          const s = link?.source?.id ?? link?.source;
-          const t2 = link?.target?.id ?? link?.target;
+          const sId = link?.source?.id ?? link?.source;
+          const tId = link?.target?.id ?? link?.target;
 
-          if (!hl || (hl.has(s) && hl.has(t2))) {
+          if (!hl) {
+            // Normal — type-based edge color
             tmpColor.set(LINK_COLORS[link?.type] || DEFAULT_LINK_COLOR);
+          } else if (hl.has(sId) && hl.has(tId)) {
+            // Both endpoints in highlight set — bright edge
+            const maxHopVal = Math.max(hl.get(sId), hl.get(tId));
+            const edgeBase = LINK_COLORS[link?.type] || DEFAULT_LINK_COLOR;
+            tmpColor.set(edgeBase);
+            if (maxHopVal <= 1) {
+              tmpColor.multiplyScalar(1.8); // very bright
+              tmpColor.r = Math.min(tmpColor.r, 1);
+              tmpColor.g = Math.min(tmpColor.g, 1);
+              tmpColor.b = Math.min(tmpColor.b, 1);
+            } else if (maxHopVal === 2) {
+              tmpColor.multiplyScalar(1.2);
+            }
+            // hop 3: normal color
           } else {
-            tmpColor.setRGB(0.03, 0.03, 0.05);
+            // Dimmed edge
+            tmpColor.setRGB(0.03, 0.03, 0.06);
           }
           colorArr[i * 6 + 0] = tmpColor.r;
           colorArr[i * 6 + 1] = tmpColor.g;
@@ -724,10 +785,15 @@ export default function GraphView3DLarge({
           colorArr[i * 6 + 5] = tmpColor.b;
         }
         edgeColorAttr.needsUpdate = true;
+
+        // Boost edge opacity during selection for highlighted edges
+        edgesMesh.material.opacity = hl
+          ? Math.min(styleRef.current.edgeOpacity * 1.5, 0.6)
+          : (nc > 15000 ? 0.08 : nc > 5000 ? 0.12 : styleRef.current.edgeOpacity);
       }
     }
 
-    // Selection ring
+    // Selection ring — position and color
     if (selectedNode && positions) {
       const idx = nodeIdToIndex.get(selectedNode.id);
       if (idx !== undefined && scales) {
@@ -739,9 +805,10 @@ export default function GraphView3DLarge({
         const sc = scales[idx] * 1.6;
         selectionRing.scale.set(sc, sc, sc);
         selectionRing.visible = true;
-        selectionRing.material.color.set(
-          NODE_COLORS[selectedNode.type] || "#ffffff"
-        );
+        const ringColor = NODE_COLORS_BRIGHT[selectedNode.type] || "#ffffff";
+        selectionRing.children.forEach((child) => {
+          child.material.color.set(ringColor);
+        });
       }
     } else {
       selectionRing.visible = false;
@@ -752,7 +819,7 @@ export default function GraphView3DLarge({
   useEffect(() => {
     const t = threeRef.current;
     if (!t?.bloomPass) return;
-    t.bloomPass.strength = style.bloomStrength * 0.6;
+    t.bloomPass.strength = style.bloomStrength;
     t.bloomPass.radius = style.bloomRadius;
     t.bloomPass.threshold = style.bloomThreshold;
   }, [style.bloomStrength, style.bloomRadius, style.bloomThreshold]);
