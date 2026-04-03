@@ -482,11 +482,17 @@ export default function GraphView3DLarge({
       controls.update();
 
       if (selectionRing.visible) {
-        // Billboard: face the camera
         selectionRing.quaternion.copy(camera.quaternion);
       }
 
-      // Read composer from ref so it picks up changes from Effect 2
+      // Label update (throttled)
+      const now = performance.now();
+      const st = threeRef.current;
+      if (st && now - st.labelLastUpdate > LABEL_UPDATE_MS) {
+        st.labelLastUpdate = now;
+        updateLabels(st, dataRef.current, styleRef.current);
+      }
+
       const comp = threeRef.current?.composer;
       if (comp) {
         comp.render();
@@ -516,6 +522,13 @@ export default function GraphView3DLarge({
       disposeObject(stars);
       disposeObject(selectionRing);
       selectionRing.children.forEach((c) => disposeObject(c));
+      // Label cleanup
+      for (const sp of labelSprites) disposeObject(sp);
+      disposeObject(labelGroup);
+      for (const [, entry] of state.labelTextureCache) {
+        if (entry.texture) entry.texture.dispose();
+      }
+      state.labelTextureCache.clear();
       if (state.bloomPass) state.bloomPass.dispose();
       if (state.composer) {
         state.composer.passes.forEach((p) => p.dispose?.());
@@ -892,6 +905,14 @@ export default function GraphView3DLarge({
       disposeObject(nodesMesh);
       disposeObject(edgesMesh);
       graphObjRef.current = null;
+      // Clear label texture cache when graph data changes
+      const lt = threeRef.current?.labelTextureCache;
+      if (lt) {
+        for (const [, entry] of lt) {
+          if (entry.texture) entry.texture.dispose();
+        }
+        lt.clear();
+      }
     };
   }, [graphData, valRange]); // eslint-disable-line react-hooks/exhaustive-deps
 
