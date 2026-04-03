@@ -277,8 +277,10 @@ export default function GraphView3DLarge({
   // Refs for stable callbacks
   const onNodeClickRef = useRef(onNodeClick);
   const styleRef = useRef(style);
+  const selectedNodeRef = useRef(selectedNode);
   onNodeClickRef.current = onNodeClick;
   styleRef.current = style;
+  selectedNodeRef.current = selectedNode;
 
   /* ── adjacency + highlight set ─────────────────────── */
   const adjacencyMap = useMemo(() => {
@@ -876,6 +878,20 @@ export default function GraphView3DLarge({
         }
         edgeGeo.attributes.position.needsUpdate = true;
         edgeGeo.computeBoundingSphere();
+
+        // Keep selection ring in sync with moving nodes
+        const selNode = selectedNodeRef.current;
+        const ring = threeRef.current?.selectionRing;
+        if (selNode && ring?.visible) {
+          const si = nodeIdToIndex.get(selNode.id);
+          if (si !== undefined) {
+            ring.position.set(
+              positions[si * 3],
+              positions[si * 3 + 1],
+              positions[si * 3 + 2]
+            );
+          }
+        }
       }
 
       if (msg.type === "settled") {
