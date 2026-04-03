@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Link } from "react-router-dom";
 const GraphView3D = lazy(() => import("../components/GraphView3D"));
 import TableView from "../components/TableView";
@@ -43,7 +43,6 @@ export default function GraphPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [viewMode, setViewMode] = useState("graph");
-  const [progressiveCount, setProgressiveCount] = useState(0);
   const graphRef = useRef();
   const searchTimeout = useRef(null);
 
@@ -96,45 +95,6 @@ export default function GraphPage() {
     const id = setInterval(fetchCrawler, interval);
     return () => clearInterval(id);
   }, [fetchCrawler, crawlerStatus.worker_running]);
-
-  /* ── progressive loading ──────────────────────────── */
-  const PROGRESSIVE_THRESHOLD = 2000;
-  const totalNodes = graphData.nodes.length;
-
-  // reset progressive count whenever raw data changes
-  useEffect(() => {
-    if (totalNodes <= PROGRESSIVE_THRESHOLD) {
-      setProgressiveCount(totalNodes);
-    } else {
-      // start with a fast initial batch, then ramp up
-      setProgressiveCount(Math.min(500, totalNodes));
-    }
-  }, [totalNodes]);
-
-  // gradually increase visible nodes
-  useEffect(() => {
-    if (progressiveCount >= totalNodes) return;
-    const nextCount = Math.min(
-      Math.ceil(progressiveCount * 2.5),
-      totalNodes
-    );
-    const delay = progressiveCount < 2000 ? 800 : 1500;
-    const timer = setTimeout(() => setProgressiveCount(nextCount), delay);
-    return () => clearTimeout(timer);
-  }, [progressiveCount, totalNodes]);
-
-  // compute visible slice (nodes are already sorted by stars/val from backend)
-  const visibleData = useMemo(() => {
-    if (progressiveCount >= totalNodes) return graphData;
-    const nodes = graphData.nodes.slice(0, progressiveCount);
-    const nodeIds = new Set(nodes.map((n) => n.id));
-    const links = graphData.links.filter((l) => {
-      const s = l.source?.id ?? l.source;
-      const t = l.target?.id ?? l.target;
-      return nodeIds.has(s) && nodeIds.has(t);
-    });
-    return { nodes, links, stats: graphData.stats };
-  }, [graphData, progressiveCount, totalNodes]);
 
   /* ── node interaction ─────────────────────────────── */
   const focusNode = useCallback(
@@ -333,13 +293,8 @@ export default function GraphPage() {
             </div>
           ) : viewMode === "graph" ? (
             <Suspense fallback={<div className="empty-state"><div className="empty-icon">◈</div><h2>Loading 3D Engine…</h2></div>}>
-              {progressiveCount < totalNodes && (
-                <div className="progressive-indicator">
-                  Loading {progressiveCount.toLocaleString()} / {totalNodes.toLocaleString()} nodes…
-                </div>
-              )}
               <GraphView3D
-                graphData={visibleData}
+                graphData={graphData}
                 onNodeClick={handleNodeClick}
                 selectedNode={selectedNode}
                 graphRef={graphRef}

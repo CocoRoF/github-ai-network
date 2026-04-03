@@ -22,7 +22,7 @@ const LINK_COLORS = {
 /* ── performance tier thresholds ──────────────────────── */
 const TIER_SMALL  = 500;    // full custom objects + labels + bloom + effects
 const TIER_MED    = 2000;   // custom objects, selective labels, bloom
-const TIER_LARGE  = 5000;   // ★ switch to built-in InstancedMesh (no custom objects)
+const TIER_LARGE  = 2000;   // ★ switch to built-in InstancedMesh (no custom objects)
 const TIER_HUGE   = 15000;  // no bloom, no fog, no particles, line-only links
 const TIER_MASSIVE = 50000; // ngraph engine, minimal rendering
 const LABEL_BUDGET = 80;    // max simultaneous sprite labels
@@ -156,6 +156,9 @@ export default function GraphView3D({
   const bloomPassRef = useRef(null);
   const orbitIntervalRef = useRef(null);
   const initDoneRef = useRef(false);
+  const hasZoomedRef = useRef(false);
+  const selectedNodeRef = useRef(null);
+  const highlightSetRef = useRef(null);
 
   const nodeCount = graphData.nodes.length;
   const linkCount = graphData.links.length;
@@ -170,6 +173,33 @@ export default function GraphView3D({
   const enableDrag     = nodeCount < TIER_MASSIVE;  // < 50K: node drag
   const enablePointer  = nodeCount < TIER_MASSIVE;  // < 50K: hover/click raycasting
   const useNgraph      = nodeCount >= TIER_LARGE;   // >= 5K: ngraph engine (faster)
+
+  /* ── reset zoom flag when graphData changes ──────────── */
+  useEffect(() => {
+    hasZoomedRef.current = false;
+  }, [graphData]);
+
+  /* ── sync refs for stable callbacks ─────────────────── */
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+    highlightSetRef.current = highlightSet;
+  });
+
+  /* ── refresh visuals when selection changes (no recreation) */
+  useEffect(() => {
+    if (graphRef?.current) {
+      graphRef.current.refresh();
+    }
+  }, [selectedNode, graphRef]);
+
+  /* ── Escape key to deselect ─────────────────────────── */
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") onNodeClick(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onNodeClick]);
 
   /* ── highlight set (BFS, adaptive depth) ────────────── */
   const highlightSet = useMemo(() => {
@@ -335,10 +365,12 @@ export default function GraphView3D({
     (node) => {
       const size = getNodeSize(node);
       const color = NODE_COLORS[node.type] || "#8b949e";
-      const isSelected = selectedNode && selectedNode.id === node.id;
-      const hopDist = highlightSet ? highlightSet.get(node.id) : undefined;
+      const sel = selectedNodeRef.current;
+      const hl = highlightSetRef.current;
+      const isSelected = sel && sel.id === node.id;
+      const hopDist = hl ? hl.get(node.id) : undefined;
       const isInHighlight = hopDist !== undefined;
-      const dimmed = highlightSet && !isInHighlight;
+      const dimmed = hl && !isInHighlight;
 
       const group = new THREE.Group();
 
@@ -391,7 +423,7 @@ export default function GraphView3D({
 
       return group;
     },
-    [getNodeSize, selectedNode, highlightSet, nodeCount, style.showLabels, style.labelScale, labelNodeIds]
+    [getNodeSize, nodeCount, style.showLabels, style.labelScale, labelNodeIds]
   );
 
   /* ── link styling ───────────────────────────────────── */
@@ -456,13 +488,32 @@ export default function GraphView3D({
   /* ── force engine configuration ─────────────────────── */
   const forceEngine = useNgraph ? "ngraph" : "d3";
 
-  // warmupTicks: run layout BEFORE first render (blocks briefly, but no jank after)
-  // cooldownTicks: stop layout after initial settle (no ongoing CPU drain)
   const warmupTicks = useNgraph
     ? (nodeCount > TIER_MASSIVE ? 150 : 100)
-    : (nodeCount > TIER_MED ? 80 : 0);
-  const cooldownTicks = useNgraph ? 0 : (nodeCount > TIER_MED ? 50 : 300);
-  const cooldownTime = nodeCount > TIER_LARGE ? 5000 : 15000;
+    : (nodeCount > TIER_MED ? 60 : 0);
+  const cooldownTicks = useNgraph ? 0 : (nodeCount > TIER_MED ? 40 : 200);
+  const cooldownTime = nodeCount > TIER_LARGE ? 3000 : 8000;
+
+  /* ── stable callbacks for JSX props ─────────────────── */
+  const handleBgClick = useCallback(() => onNodeClick(null), [onNodeClick]);
+
+  const nodeLabelFn = useCallback((n) => n.label, []);
+
+  const nodeColorFn = useCallback(
+    (n) => {
+      const hl = highlightSetRef.current;
+      if (hl && !hl.has(n.id)) return "rgba(30,30,40,0.15)";
+      return NODE_COLORS[n.type] || "#8b949e";
+    },
+    []
+  );
+
+  const handleEngineStop = useCallback(() => {
+    if (graphRef?.current && nodeCount > 0 && !hasZoomedRef.current) {
+      hasZoomedRef.current = true;
+      graphRef.current.zoomToFit(800, 100);
+    }
+  }, [graphRef, nodeCount]);
 
   return (
     <ForceGraph3D
@@ -471,17 +522,14 @@ export default function GraphView3D({
       {...(useCustomObj
         ? { nodeThreeObject, nodeThreeObjectExtend: false }
         : {
-            nodeColor: (n) => {
-              if (highlightSet && !highlightSet.has(n.id)) return "rgba(30,30,40,0.15)";
-              return NODE_COLORS[n.type] || "#8b949e";
-            },
+            nodeColor: nodeColorFn,
             nodeOpacity: 0.85,
             nodeResolution: nodeCount > TIER_MASSIVE ? 3 : 4,
           }
       )}
       nodeVal="val"
       nodeRelSize={nodeCount > TIER_MASSIVE ? 2 : 4}
-      nodeLabel={enablePointer ? (n) => n.label : null}
+      nodeLabel={enablePointer ? nodeLabelFn : null}
       /* ── link ─────────────── */
       linkColor={linkColor}
       linkOpacity={linkOpacity}
@@ -494,7 +542,7 @@ export default function GraphView3D({
       linkResolution={nodeCount > TIER_LARGE ? 3 : 6}
       /* ── interaction ──────── */
       onNodeClick={handleNodeClick}
-      onBackgroundClick={() => onNodeClick(null)}
+      onBackgroundClick={handleBgClick}
       enablePointerInteraction={enablePointer}
       enableNodeDrag={enableDrag}
       /* ── engine ───────────── */
@@ -502,16 +550,12 @@ export default function GraphView3D({
       warmupTicks={warmupTicks}
       cooldownTicks={cooldownTicks}
       cooldownTime={cooldownTime}
-      d3AlphaDecay={nodeCount > TIER_HUGE ? 0.05 : 0.028}
+      d3AlphaDecay={nodeCount > TIER_HUGE ? 0.06 : 0.035}
       d3VelocityDecay={nodeCount > TIER_HUGE ? 0.5 : 0.4}
       /* ── render ───────────── */
       backgroundColor="rgba(0,0,0,0)"
       showNavInfo={false}
-      onEngineStop={() => {
-        if (graphRef?.current && nodeCount > 0) {
-          graphRef.current.zoomToFit(800, 100);
-        }
-      }}
+      onEngineStop={handleEngineStop}
       onNodeDragEnd={(node) => {
         node.fx = node.x;
         node.fy = node.y;
