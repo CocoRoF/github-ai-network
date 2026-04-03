@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
 import { Link } from "react-router-dom";
 const GraphView3DLarge = lazy(() => import("../components/GraphView3DLarge"));
 import TableView from "../components/TableView";
 import Sidebar from "../components/Sidebar";
 import StatsModal from "../components/StatsModal";
+import NodeDetailModal from "../components/NodeDetailModal";
 
 const API = "/api";
 
@@ -43,9 +44,24 @@ export default function GraphPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [viewMode, setViewMode] = useState("graph");
+  const [detailNode, setDetailNode] = useState(null);
   const graphRef = useRef();
   const graphContainerRef = useRef(null);
   const searchTimeout = useRef(null);
+
+  /* ── adjacency map for modal subgraph ────────────── */
+  const adjacencyMap = useMemo(() => {
+    const adj = new Map();
+    graphData.links.forEach((l) => {
+      const s = l.source?.id ?? l.source;
+      const t = l.target?.id ?? l.target;
+      if (!adj.has(s)) adj.set(s, []);
+      if (!adj.has(t)) adj.set(t, []);
+      adj.get(s).push(t);
+      adj.get(t).push(s);
+    });
+    return adj;
+  }, [graphData.links]);
 
   /* ── fetch sessions ───────────────────────────────── */
   const fetchSessions = useCallback(async () => {
@@ -190,6 +206,18 @@ export default function GraphPage() {
     }
   };
 
+  /* ── double click → detail modal ─────────────────── */
+  const handleNodeDoubleClick = useCallback(async (node) => {
+    if (!node) return;
+    try {
+      const r = await fetch(`${API}/graph/node/${encodeURIComponent(node.id)}`);
+      const detail = await r.json();
+      setDetailNode({ ...node, ...detail });
+    } catch (_) {
+      setDetailNode(node);
+    }
+  }, []);
+
   /* ── render ───────────────────────────────────────── */
   return (
     <div className="app">
@@ -304,6 +332,7 @@ export default function GraphPage() {
                 <GraphView3DLarge
                   graphData={graphData}
                   onNodeClick={handleNodeClick}
+                  onNodeDoubleClick={handleNodeDoubleClick}
                   selectedNode={selectedNode}
                   graphRef={graphRef}
                   graphStyle={graphStyle}
@@ -357,6 +386,23 @@ export default function GraphPage() {
             setShowStatsModal(false);
             const graphNode = graphData.nodes.find((n) => n.id === node.id);
             handleNodeClick(graphNode || node);
+          }}
+        />
+      )}
+
+      {detailNode && (
+        <NodeDetailModal
+          node={detailNode}
+          graphData={graphData}
+          adjacencyMap={adjacencyMap}
+          onClose={() => setDetailNode(null)}
+          onNodeNavigate={(navNode) => {
+            setDetailNode(null);
+            const target = graphData.nodes.find((n) => n.id === navNode.id);
+            if (target) {
+              focusNode(target);
+              handleNodeClick(target);
+            }
           }}
         />
       )}

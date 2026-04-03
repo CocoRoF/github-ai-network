@@ -250,6 +250,7 @@ function updateLabels(state, data, style) {
 export default function GraphView3DLarge({
   graphData,
   onNodeClick,
+  onNodeDoubleClick,
   selectedNode,
   graphRef,
   graphStyle = {},
@@ -276,9 +277,11 @@ export default function GraphView3DLarge({
 
   // Refs for stable callbacks
   const onNodeClickRef = useRef(onNodeClick);
+  const onNodeDoubleClickRef = useRef(onNodeDoubleClick);
   const styleRef = useRef(style);
   const selectedNodeRef = useRef(selectedNode);
   onNodeClickRef.current = onNodeClick;
+  onNodeDoubleClickRef.current = onNodeDoubleClick;
   styleRef.current = style;
   selectedNodeRef.current = selectedNode;
 
@@ -1200,7 +1203,7 @@ export default function GraphView3DLarge({
     };
   }, [graphRef]);
 
-  /* ── Effect 6: click/interaction handler ───────────── */
+  /* ── Effect 6: click/interaction handler (single + double click) ── */
   useEffect(() => {
     const t = threeRef.current;
     if (!t) return;
@@ -1210,6 +1213,9 @@ export default function GraphView3DLarge({
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     let mouseDownPos = null;
+    let lastClickTime = 0;
+    let lastClickNodeId = null;
+    let singleClickTimer = null;
 
     function onPointerDown(e) {
       mouseDownPos = { x: e.clientX, y: e.clientY };
@@ -1233,7 +1239,28 @@ export default function GraphView3DLarge({
       const hits = raycaster.intersectObject(gObj.nodesMesh);
       if (hits.length > 0 && hits[0].instanceId != null) {
         const node = dataRef.current.nodes[hits[0].instanceId];
-        if (node) {
+        if (!node) return;
+
+        const now = performance.now();
+        const isDouble =
+          now - lastClickTime < 400 && lastClickNodeId === node.id;
+
+        if (isDouble) {
+          // ── Double click: open detail modal ──
+          clearTimeout(singleClickTimer);
+          singleClickTimer = null;
+          lastClickTime = 0;
+          lastClickNodeId = null;
+          onNodeDoubleClickRef.current?.(node);
+          return;
+        }
+
+        // ── First click: defer single-click to allow double-click detection ──
+        lastClickTime = now;
+        lastClickNodeId = node.id;
+
+        singleClickTimer = setTimeout(() => {
+          singleClickTimer = null;
           const nx = node.x || 0,
             ny = node.y || 0,
             nz = node.z || 0;
@@ -1249,8 +1276,12 @@ export default function GraphView3DLarge({
             );
           }
           onNodeClickRef.current(node);
-        }
+        }, 250);
       } else {
+        clearTimeout(singleClickTimer);
+        singleClickTimer = null;
+        lastClickTime = 0;
+        lastClickNodeId = null;
         onNodeClickRef.current(null);
       }
     }
@@ -1259,6 +1290,7 @@ export default function GraphView3DLarge({
     canvas.addEventListener("pointerup", onPointerUp);
 
     return () => {
+      clearTimeout(singleClickTimer);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
     };
