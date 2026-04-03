@@ -160,7 +160,6 @@ export default function GraphView3DLarge({
     return adj;
   }, [graphData.links]);
 
-  const nodeCount = graphData.nodes.length;
   // Always 3 hops for strong visual context
   const maxHops = 3;
 
@@ -271,16 +270,16 @@ export default function GraphView3DLarge({
     controls.minDistance = 10;
     controls.maxDistance = 30000;
 
-    // Lights — rich multi-source lighting for depth perception
-    const ambient = new THREE.AmbientLight(0x303050, 2.0);
+    // Lights — neutral white-ish to preserve instanceColor hues
+    const ambient = new THREE.AmbientLight(0xcccccc, 1.0);
     scene.add(ambient);
-    const keyLight = new THREE.DirectionalLight(0x6699cc, 1.2);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
     keyLight.position.set(300, 500, 400);
     scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0x445588, 0.6);
+    const fillLight = new THREE.DirectionalLight(0xaabbcc, 0.5);
     fillLight.position.set(-400, -200, 300);
     scene.add(fillLight);
-    const rimLight = new THREE.PointLight(0x8866ff, 0.8, 12000);
+    const rimLight = new THREE.PointLight(0x9999ff, 0.4, 12000);
     rimLight.position.set(0, -300, -500);
     scene.add(rimLight);
 
@@ -483,11 +482,10 @@ export default function GraphView3DLarge({
     const rings = nc > 50000 ? 4 : nc > 15000 ? 6 : 8;
     const sphereGeo = new THREE.SphereGeometry(1, segments, rings);
     const nodeMaterial = new THREE.MeshStandardMaterial({
-      roughness: 0.35,
-      metalness: 0.15,
-      emissive: 0x446688,
-      emissiveIntensity: 0.5,
-      envMapIntensity: 0.3,
+      roughness: 0.3,
+      metalness: 0.1,
+      emissive: 0x111111,      // neutral — let instanceColor drive the hue
+      emissiveIntensity: 0.15,
     });
 
     const nodesMesh = new THREE.InstancedMesh(sphereGeo, nodeMaterial, nc);
