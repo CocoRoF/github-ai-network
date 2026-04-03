@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Link } from "react-router-dom";
-const GraphView3D = lazy(() => import("../components/GraphView3D"));
 const GraphView3DLarge = lazy(() => import("../components/GraphView3DLarge"));
 import TableView from "../components/TableView";
 import Sidebar from "../components/Sidebar";
@@ -120,7 +119,7 @@ export default function GraphPage() {
       setSelectedNode(null);
       return;
     }
-    // 일반 클릭 시 카메라 이동은 GraphView3D.handleNodeClick에서 전담
+    // 카메라 이동은 GraphView3DLarge 내부에서 전담
     try {
       const r = await fetch(`${API}/graph/node/${encodeURIComponent(node.id)}`);
       const detail = await r.json();
