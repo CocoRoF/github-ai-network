@@ -504,9 +504,9 @@ export default function GraphView3DLarge({
 
     // ── fly state: thrust has inertia, turning is instant ──
     const fly = { thrust: 0 };
-    const FLY_ACCEL = 0.04;       // thrust acceleration per frame
+    const FLY_ACCEL = 0.013;      // thrust acceleration per frame
     const FLY_FRICTION = 0.92;    // thrust decay when key released
-    const FLY_MAX_THRUST = 3.0;   // max thrust velocity cap
+    const FLY_MAX_THRUST = 1.0;   // max thrust velocity cap
     const FLY_TURN_RATE = 0.008;  // instant turn rate (rad/frame)
 
     function animate() {
