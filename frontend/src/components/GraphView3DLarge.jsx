@@ -887,7 +887,7 @@ export default function GraphView3DLarge({
         // Keep selection ring in sync with moving nodes
         const selNode = selectedNodeRef.current;
         const ring = threeRef.current?.selectionRing;
-        if (selNode && ring?.visible) {
+        if (selNode && ring) {
           const si = nodeIdToIndex.get(selNode.id);
           if (si !== undefined) {
             ring.position.set(
@@ -895,6 +895,16 @@ export default function GraphView3DLarge({
               positions[si * 3 + 1],
               positions[si * 3 + 2]
             );
+            // Ensure ring is visible and scaled (may not have been set by Effect 3 yet)
+            if (!ring.visible && nodeScales[si]) {
+              const sc = nodeScales[si] * 1.6;
+              ring.scale.set(sc, sc, sc);
+              ring.visible = true;
+              const ringColor = NODE_COLORS_BRIGHT[selNode.type] || "#ffffff";
+              ring.children.forEach((child) => {
+                child.material.color.set(ringColor);
+              });
+            }
           }
         }
       }
