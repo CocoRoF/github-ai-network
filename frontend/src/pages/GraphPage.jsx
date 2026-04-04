@@ -1,25 +1,36 @@
 import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 const GraphView3DLarge = lazy(() => import("../components/GraphView3DLarge"));
 import TableView from "../components/TableView";
 import Sidebar from "../components/Sidebar";
-import StatsModal from "../components/StatsModal";
-import NodeDetailModal from "../components/NodeDetailModal";
+const StatsModal = lazy(() => import("../components/StatsModal"));
+const NodeDetailModal = lazy(() => import("../components/NodeDetailModal"));
+import ErrorBoundary from "../components/ErrorBoundary";
 
 const API = "/api";
 
+function parseFiltersFromURL(searchParams) {
+  const types = searchParams.get("types");
+  const minStars = searchParams.get("min_stars");
+  const limit = searchParams.get("limit");
+  const language = searchParams.get("lang");
+  return {
+    types: types ? types.split(",") : ["author", "repo", "topic"],
+    minStars: minStars ? parseInt(minStars, 10) : 0,
+    limit: limit ? parseInt(limit, 10) : 100000,
+    language: language || "",
+  };
+}
+
 export default function GraphPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [selectedNode, setSelectedNode] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [sessions, setSessions] = useState([]);
-  const [selectedSession, setSelectedSession] = useState(null); // null = all
-  const [filters, setFilters] = useState({
-    types: ["author", "repo", "topic"],
-    minStars: 0,
-    limit: 100000,
-    language: "",
-  });
+  const initSession = searchParams.get("session") || null;
+  const [selectedSession, setSelectedSession] = useState(initSession);
+  const [filters, setFilters] = useState(() => parseFiltersFromURL(searchParams));
   const [crawlerStatus, setCrawlerStatus] = useState({});
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState({});
@@ -92,6 +103,17 @@ export default function GraphPage() {
     }
     setLoading(false);
   }, [filters, selectedSession]);
+
+  /* ── sync filters → URL query params ──────────────── */
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (filters.types.join(",") !== "author,repo,topic") p.set("types", filters.types.join(","));
+    if (filters.minStars > 0) p.set("min_stars", filters.minStars);
+    if (filters.limit !== 100000) p.set("limit", filters.limit);
+    if (filters.language) p.set("lang", filters.language);
+    if (selectedSession) p.set("session", selectedSession);
+    setSearchParams(p, { replace: true });
+  }, [filters, selectedSession, setSearchParams]);
 
   /* ── crawler status polling ───────────────────────── */
   const fetchCrawler = useCallback(async () => {
@@ -206,6 +228,76 @@ export default function GraphPage() {
     }
   };
 
+  /* ── help overlay ─────────────────────────────────── */
+  const [showHelp, setShowHelp] = useState(() => !localStorage.getItem("help-dismissed"));
+  const dismissHelp = () => { setShowHelp(false); localStorage.setItem("help-dismissed", "1"); };
+
+  /* ── screenshot capture ──────────────────────────── */
+  const handleScreenshot = useCallback(() => {
+    const dataUrl = graphRef.current?.captureScreenshot?.();
+    if (!dataUrl) return;
+    const link = document.createElement("a");
+    link.download = `ai-network-${Date.now()}.png`;
+    link.href = dataUrl;
+    link.click();
+  }, []);
+
+  /* ── data export ─────────────────────────────────── */
+  const handleExportJSON = useCallback(() => {
+    const blob = new Blob([JSON.stringify(graphData, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.download = `ai-network-${Date.now()}.json`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }, [graphData]);
+
+  const handleExportCSV = useCallback(() => {
+    const header = "id,type,label,stars,language,followers,connections\n";
+    const rows = graphData.nodes.map((n) =>
+      [n.id, n.type, `"${(n.label || "").replace(/"/g, '""')}"`, n.stars ?? "", n.language ?? "", n.followers ?? "", n.connections ?? ""].join(",")
+    ).join("\n");
+    const blob = new Blob([header + rows], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.download = `ai-network-${Date.now()}.csv`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }, [graphData]);
+
+  /* ── keyboard shortcuts ──────────────────────────── */
+  useEffect(() => {
+    const handleKey = (e) => {
+      // skip if user is typing in an input
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      switch (e.key) {
+        case "F11": {
+          e.preventDefault();
+          const el = graphContainerRef.current;
+          if (!el) break;
+          if (document.fullscreenElement) document.exitFullscreen();
+          else el.requestFullscreen();
+          break;
+        }
+        case "/":
+          e.preventDefault();
+          document.querySelector(".search-input")?.focus();
+          break;
+        case "Home":
+          graphRef.current?.zoomToFit(800, 100);
+          break;
+        case "?":
+          setShowHelp((v) => !v);
+          break;
+        case "Escape":
+          if (showHelp) setShowHelp(false);
+          break;
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [showHelp]);
+
   /* ── double click → detail modal ─────────────────── */
   const handleNodeDoubleClick = useCallback(async (node) => {
     if (!node) return;
@@ -314,6 +406,15 @@ export default function GraphPage() {
           />
         </div>
         <div className="graph-container" ref={graphContainerRef}>
+          {loading && graphData.nodes.length === 0 && (
+            <div className="graph-loading-skeleton">
+              <div className="skeleton-pulse" />
+              <div className="skeleton-text">Loading graph data…</div>
+              <div className="skeleton-sub">
+                {stats.total_nodes ? `${stats.total_nodes.toLocaleString()} nodes` : "Preparing visualization"}
+              </div>
+            </div>
+          )}
           {graphData.nodes.length === 0 && !loading ? (
             <div className="empty-state">
               <div className="empty-icon">◈</div>
@@ -328,16 +429,18 @@ export default function GraphPage() {
             </div>
           ) : viewMode === "graph" ? (
             <>
-              <Suspense fallback={<div className="empty-state"><div className="empty-icon">◈</div><h2>Loading 3D Engine…</h2></div>}>
-                <GraphView3DLarge
-                  graphData={graphData}
-                  onNodeClick={handleNodeClick}
-                  onNodeDoubleClick={handleNodeDoubleClick}
-                  selectedNode={selectedNode}
-                  graphRef={graphRef}
-                  graphStyle={graphStyle}
-                />
-              </Suspense>
+              <ErrorBoundary title="3D graph rendering failed">
+                <Suspense fallback={<div className="empty-state"><div className="empty-icon">◈</div><h2>Loading 3D Engine…</h2></div>}>
+                  <GraphView3DLarge
+                    graphData={graphData}
+                    onNodeClick={handleNodeClick}
+                    onNodeDoubleClick={handleNodeDoubleClick}
+                    selectedNode={selectedNode}
+                    graphRef={graphRef}
+                    graphStyle={graphStyle}
+                  />
+                </Suspense>
+              </ErrorBoundary>
               <div className="graph-controls">
                 <button
                   className="graph-ctrl-btn"
@@ -352,7 +455,7 @@ export default function GraphPage() {
                 <button
                   className="graph-ctrl-btn"
                   onClick={() => graphRef.current?.zoomToFit(800, 100)}
-                  title="Reset View"
+                  title="Reset View (Home)"
                 >⌂</button>
                 <button
                   className="graph-ctrl-btn"
@@ -365,9 +468,64 @@ export default function GraphPage() {
                       el.requestFullscreen();
                     }
                   }}
-                  title="Fullscreen"
+                  title="Fullscreen (F11)"
                 >⛶</button>
+                <div className="graph-ctrl-divider" />
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={handleScreenshot}
+                  title="Screenshot"
+                >📷</button>
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={handleExportJSON}
+                  title="Export JSON"
+                >💾</button>
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={handleExportCSV}
+                  title="Export CSV"
+                >📊</button>
+                <div className="graph-ctrl-divider" />
+                <button
+                  className="graph-ctrl-btn"
+                  onClick={() => setShowHelp((v) => !v)}
+                  title="Help (?)"
+                >?</button>
               </div>
+              {showHelp && (
+                <div className="help-overlay" onClick={dismissHelp}>
+                  <div className="help-card" onClick={(e) => e.stopPropagation()}>
+                    <h3>Mouse</h3>
+                    <div className="help-grid">
+                      <span className="help-key">Left drag</span><span>Rotate</span>
+                      <span className="help-key">Right drag</span><span>Pan</span>
+                      <span className="help-key">Scroll</span><span>Zoom</span>
+                      <span className="help-key">Click</span><span>Select node</span>
+                      <span className="help-key">Double-click</span><span>Node details</span>
+                      <span className="help-key">Right-click</span><span>Context menu</span>
+                    </div>
+                    <h3>Fly Controls</h3>
+                    <div className="help-grid">
+                      <span className="help-key">W / &#x2191;</span><span>Forward</span>
+                      <span className="help-key">S / &#x2193;</span><span>Backward</span>
+                      <span className="help-key">A / &#x2190;</span><span>Strafe left</span>
+                      <span className="help-key">D / &#x2192;</span><span>Strafe right</span>
+                      <span className="help-key">Q / Space</span><span>Up</span>
+                      <span className="help-key">E / Shift</span><span>Down</span>
+                    </div>
+                    <h3>Shortcuts</h3>
+                    <div className="help-grid">
+                      <span className="help-key">F11</span><span>Fullscreen</span>
+                      <span className="help-key">/</span><span>Focus search</span>
+                      <span className="help-key">Home</span><span>Reset view</span>
+                      <span className="help-key">?</span><span>Toggle help</span>
+                      <span className="help-key">Esc</span><span>Close overlay</span>
+                    </div>
+                    <button className="help-dismiss" onClick={dismissHelp}>Got it</button>
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <TableView

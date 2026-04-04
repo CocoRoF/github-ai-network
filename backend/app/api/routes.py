@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
+from fastapi.responses import JSONResponse
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -7,6 +8,31 @@ from app.models import Author, Repository, Topic, RepoTopic, RepoContributor
 from app.graph.builder import GraphBuilder
 
 router = APIRouter()
+
+
+# ── health check ────────────────────────────────────────
+
+@router.get("/health")
+async def health_check(request: Request, db: AsyncSession = Depends(get_db)):
+    """Health check: DB connectivity + crawler worker status."""
+    try:
+        await db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    crawler = getattr(request.app.state, "crawler", None)
+    worker_running = crawler.worker_running if crawler else False
+
+    status_code = 200 if db_ok else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "ok" if db_ok else "degraded",
+            "db": "connected" if db_ok else "disconnected",
+            "worker": "running" if worker_running else "stopped",
+        },
+    )
 
 
 # ── graph endpoints ──────────────────────────────────────
@@ -60,18 +86,20 @@ async def get_node_detail(
 ):
     parts = node_id.split(":")
     if len(parts) != 2:
-        return {"error": "Invalid node_id format"}
+        raise HTTPException(status_code=400, detail="Invalid node_id format")
 
     node_type = parts[0]
     try:
         db_id = int(parts[1])
     except (ValueError, IndexError):
-        return {"error": "Invalid node_id format"}
+        raise HTTPException(status_code=400, detail="Invalid node_id format")
 
     if node_type == "repo":
-        repo = (await db.execute(select(Repository).where(Repository.id == db_id))).scalar_one_or_none()
+        repo = (await db.execute(
+            select(Repository).where(Repository.id == db_id)
+        )).scalar_one_or_none()
         if not repo:
-            return {"error": "Not found"}
+            raise HTTPException(status_code=404, detail="Repository not found")
 
         result = {
             "id": node_id, "type": "repo", "label": repo.full_name,
@@ -133,9 +161,11 @@ async def get_node_detail(
         return result
 
     elif node_type == "author":
-        author = (await db.execute(select(Author).where(Author.id == db_id))).scalar_one_or_none()
+        author = (await db.execute(
+            select(Author).where(Author.id == db_id)
+        )).scalar_one_or_none()
         if not author:
-            return {"error": "Not found"}
+            raise HTTPException(status_code=404, detail="Author not found")
 
         result = {
             "id": node_id, "type": "author", "label": author.login,
@@ -185,9 +215,11 @@ async def get_node_detail(
         return result
 
     elif node_type == "topic":
-        topic = (await db.execute(select(Topic).where(Topic.id == db_id))).scalar_one_or_none()
+        topic = (await db.execute(
+            select(Topic).where(Topic.id == db_id)
+        )).scalar_one_or_none()
         if not topic:
-            return {"error": "Not found"}
+            raise HTTPException(status_code=404, detail="Topic not found")
         repo_count = (await db.execute(
             select(func.count()).where(RepoTopic.topic_id == db_id)
         )).scalar() or 0
@@ -214,7 +246,7 @@ async def get_node_detail(
             ],
         }
 
-    return {"error": "Unknown type"}
+    raise HTTPException(status_code=400, detail=f"Unknown node type: {node_type}")
 
 
 # ── search ───────────────────────────────────────────────

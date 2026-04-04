@@ -8,7 +8,7 @@
  *
  * Total draw calls: 2  (vs N in react-force-graph-3d)
  */
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -83,12 +83,24 @@ function createStarField(count, radius) {
   );
 }
 
+function disposeMaterial(mat) {
+  if (!mat) return;
+  // dispose any textures attached to the material
+  for (const key of Object.keys(mat)) {
+    const val = mat[key];
+    if (val && typeof val === "object" && typeof val.dispose === "function" && val.isTexture) {
+      val.dispose();
+    }
+  }
+  mat.dispose();
+}
+
 function disposeObject(obj) {
   if (!obj) return;
   if (obj.geometry) obj.geometry.dispose();
   if (obj.material) {
-    if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-    else obj.material.dispose();
+    if (Array.isArray(obj.material)) obj.material.forEach(disposeMaterial);
+    else disposeMaterial(obj.material);
   }
   if (obj.children) [...obj.children].forEach(disposeObject);
 }
@@ -256,6 +268,8 @@ export default function GraphView3DLarge({
   graphStyle = {},
 }) {
   const containerRef = useRef(null);
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, node }
+  const keysPressedRef = useRef(new Set());
   const style = useMemo(
     () => ({ ...DEFAULT_STYLE, ...graphStyle }),
     [graphStyle]
@@ -482,9 +496,65 @@ export default function GraphView3DLarge({
 
     // Animation loop — reads composer from ref, not closure
     let animFrame;
+    const _flyDir = new THREE.Vector3();
+    const _flyRight = new THREE.Vector3();
+    const _flyUp = new THREE.Vector3(0, 1, 0);
+
     function animate() {
       animFrame = requestAnimationFrame(animate);
       controls.update();
+
+      // ── keyboard fly controls (WASD / arrows) ──
+      const keys = keysPressedRef.current;
+      if (keys.size > 0) {
+        // camera look direction
+        _flyDir.subVectors(controls.target, camera.position).normalize();
+        // right vector
+        _flyRight.crossVectors(_flyDir, _flyUp).normalize();
+
+        const dist = camera.position.distanceTo(controls.target);
+        const speed = Math.max(1, dist * 0.02); // adaptive: faster when zoomed out
+        let dx = 0, dy = 0, dz = 0;
+
+        // forward / backward (along look direction)
+        if (keys.has("w") || keys.has("arrowup")) {
+          dx += _flyDir.x * speed;
+          dy += _flyDir.y * speed;
+          dz += _flyDir.z * speed;
+        }
+        if (keys.has("s") || keys.has("arrowdown")) {
+          dx -= _flyDir.x * speed;
+          dy -= _flyDir.y * speed;
+          dz -= _flyDir.z * speed;
+        }
+        // left / right (strafe)
+        if (keys.has("a") || keys.has("arrowleft")) {
+          dx -= _flyRight.x * speed;
+          dy -= _flyRight.y * speed;
+          dz -= _flyRight.z * speed;
+        }
+        if (keys.has("d") || keys.has("arrowright")) {
+          dx += _flyRight.x * speed;
+          dy += _flyRight.y * speed;
+          dz += _flyRight.z * speed;
+        }
+        // up / down
+        if (keys.has("q") || keys.has(" ")) {
+          dy += speed;
+        }
+        if (keys.has("e") || keys.has("shift")) {
+          dy -= speed;
+        }
+
+        if (dx !== 0 || dy !== 0 || dz !== 0) {
+          camera.position.x += dx;
+          camera.position.y += dy;
+          camera.position.z += dz;
+          controls.target.x += dx;
+          controls.target.y += dy;
+          controls.target.z += dz;
+        }
+      }
 
       if (selectionRing.visible) {
         selectionRing.quaternion.copy(camera.quaternion);
@@ -538,7 +608,16 @@ export default function GraphView3DLarge({
       if (state.composer) {
         state.composer.passes.forEach((p) => p.dispose?.());
       }
+      // dispose all remaining scene objects
+      scene.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) obj.material.forEach(disposeMaterial);
+          else disposeMaterial(obj.material);
+        }
+      });
       renderer.dispose();
+      renderer.forceContextLoss();
       if (container.contains(canvas)) container.removeChild(canvas);
       threeRef.current = null;
     };
@@ -1212,6 +1291,12 @@ export default function GraphView3DLarge({
       },
       scene: () => threeRef.current?.scene,
       renderer: () => threeRef.current?.renderer,
+      captureScreenshot: () => {
+        const t = threeRef.current;
+        if (!t) return null;
+        t.renderer.render(t.scene, t.camera);
+        return t.renderer.domElement.toDataURL("image/png");
+      },
     };
     return () => {
       if (graphRef) graphRef.current = null;
@@ -1301,29 +1386,130 @@ export default function GraphView3DLarge({
       }
     }
 
+    function onContextMenu(e) {
+      e.preventDefault();
+      const gObj = graphObjRef.current;
+      if (!gObj?.nodesMesh) { setContextMenu(null); return; }
+
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+
+      const hits = raycaster.intersectObject(gObj.nodesMesh);
+      if (hits.length > 0 && hits[0].instanceId != null) {
+        const node = dataRef.current.nodes[hits[0].instanceId];
+        if (node) {
+          setContextMenu({ x: e.clientX - rect.left, y: e.clientY - rect.top, node });
+          return;
+        }
+      }
+      setContextMenu(null);
+    }
+
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("contextmenu", onContextMenu);
 
     return () => {
       clearTimeout(singleClickTimer);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("contextmenu", onContextMenu);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ── Effect 7: Escape key ──────────────────────────── */
+  /* ── Effect 7: keyboard fly controls + escape ──────── */
   useEffect(() => {
+    const FLY_KEYS = new Set([
+      "w", "a", "s", "d", "q", "e",
+      "arrowup", "arrowdown", "arrowleft", "arrowright",
+      " ", "shift",
+    ]);
+
     const handleKeyDown = (e) => {
-      if (e.key === "Escape") onNodeClickRef.current(null);
+      // skip if typing in input
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+      if (e.key === "Escape") {
+        setContextMenu(null);
+        onNodeClickRef.current(null);
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      if (FLY_KEYS.has(key)) {
+        e.preventDefault();
+        keysPressedRef.current.add(key);
+      }
     };
+
+    const handleKeyUp = (e) => {
+      const key = e.key.toLowerCase();
+      keysPressedRef.current.delete(key);
+    };
+
+    // clear all keys when window loses focus
+    const handleBlur = () => keysPressedRef.current.clear();
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+      keysPressedRef.current.clear();
+    };
   }, []);
+
+  // Close context menu on any click
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   return (
     <div
       ref={containerRef}
       style={{ width: "100%", height: "100%", position: "relative" }}
-    />
+      onClick={closeContextMenu}
+    >
+      {contextMenu && (
+        <div
+          className="node-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="ctx-menu-header">{contextMenu.node.label}</div>
+          <button
+            className="ctx-menu-item"
+            onClick={() => {
+              window.open(contextMenu.node.url || `https://github.com/${contextMenu.node.label}`, "_blank");
+              setContextMenu(null);
+            }}
+          >
+            Open on GitHub
+          </button>
+          <button
+            className="ctx-menu-item"
+            onClick={() => {
+              onNodeDoubleClickRef.current?.(contextMenu.node);
+              setContextMenu(null);
+            }}
+          >
+            View details
+          </button>
+          <button
+            className="ctx-menu-item"
+            onClick={() => {
+              navigator.clipboard.writeText(
+                `${contextMenu.node.id} — ${contextMenu.node.label}`
+              );
+              setContextMenu(null);
+            }}
+          >
+            Copy info
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

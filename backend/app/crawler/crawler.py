@@ -21,13 +21,15 @@ logger = logging.getLogger(__name__)
 
 
 class CrawlerManager:
-    """Manages multiple crawl sessions with a single worker."""
+    """Manages multiple crawl sessions with concurrent workers."""
 
     MAX_LOG_BUFFER = 200  # keep last N log entries in memory for fast access
+    NUM_WORKERS = 3       # concurrent worker count
 
     def __init__(self):
         self.client = GitHubClient()
-        self._worker: asyncio.Task | None = None
+        self._workers: list[asyncio.Task] = []
+        self._worker_sem = asyncio.Semaphore(self.NUM_WORKERS)
         self._last_error: str | None = None
         self._invalidate_cache_fn = None  # set by main.py
         # ── in-memory lookup caches (github_id → db_id) ──
@@ -37,6 +39,7 @@ class CrawlerManager:
         self._heartbeat_at: float = 0.0           # last worker activity (time.time())
         self._started_at: float | None = None      # worker start time
         self._current_task: dict | None = None     # {id, type, target, session_id, started_at}
+        self._active_tasks: dict[int, dict] = {}   # worker_idx → current task info
         self._tasks_completed_times: deque = deque(maxlen=60)  # timestamps of last 60 completions
         self._log_buffer: deque = deque(maxlen=self.MAX_LOG_BUFFER)
 
@@ -47,7 +50,7 @@ class CrawlerManager:
 
     @property
     def worker_running(self) -> bool:
-        return self._worker is not None and not self._worker.done()
+        return any(not w.done() for w in self._workers)
 
     @property
     def tasks_per_minute(self) -> float:
@@ -266,48 +269,59 @@ class CrawlerManager:
     # ── worker lifecycle ──────────────────────────────────
 
     def _ensure_worker(self):
-        if not self.worker_running:
-            self._worker = asyncio.create_task(self._run())
-            self._worker.add_done_callback(self._on_worker_done)
+        # Remove finished workers
+        self._workers = [w for w in self._workers if not w.done()]
+        if not self._workers:
             self._started_at = time.time()
             self._heartbeat_at = time.time()
-            logger.info("Worker started")
-            asyncio.create_task(self._log_event("worker_start", "Worker started"))
+            for i in range(self.NUM_WORKERS):
+                w = asyncio.create_task(self._run(worker_idx=i))
+                w.add_done_callback(self._on_worker_done)
+                self._workers.append(w)
+            logger.info("Started %d workers", self.NUM_WORKERS)
+            asyncio.create_task(self._log_event(
+                "worker_start", f"Started {self.NUM_WORKERS} concurrent workers",
+            ))
 
     def _on_worker_done(self, task: asyncio.Task):
-        self._current_task = None
-        self._started_at = None
+        # Check if ALL workers are done
+        if all(w.done() for w in self._workers):
+            self._current_task = None
+            self._started_at = None
+            self._active_tasks.clear()
         if task.cancelled():
-            logger.info("Worker cancelled")
-            asyncio.get_event_loop().create_task(
-                self._log_event("worker_stop", "Worker cancelled")
-            )
+            logger.info("A worker was cancelled")
         elif task.exception():
             exc = task.exception()
             self._last_error = f"Worker crashed: {exc}"
             logger.error("Worker crashed: %s", exc, exc_info=exc)
             try:
-                loop = asyncio.get_event_loop()
-                loop.create_task(
+                asyncio.get_event_loop().create_task(
                     self._log_event("worker_crash", f"Worker crashed: {exc}", level="error")
                 )
             except RuntimeError:
                 pass
         else:
-            logger.info("Worker finished (no more tasks)")
-            asyncio.get_event_loop().create_task(
-                self._log_event("worker_stop", "Worker finished — no more tasks")
-            )
+            if all(w.done() for w in self._workers):
+                logger.info("All workers finished (no more tasks)")
+                try:
+                    asyncio.get_event_loop().create_task(
+                        self._log_event("worker_stop", "All workers finished — no more tasks")
+                    )
+                except RuntimeError:
+                    pass
 
     async def stop_worker(self):
-        if self._worker:
-            self._worker.cancel()
+        for w in self._workers:
+            w.cancel()
+        for w in self._workers:
             try:
-                await self._worker
+                await w
             except asyncio.CancelledError:
                 pass
-            self._worker = None
-        logger.info("Worker stopped")
+        self._workers.clear()
+        self._active_tasks.clear()
+        logger.info("All workers stopped")
 
     async def close(self):
         await self.stop_worker()
@@ -315,13 +329,14 @@ class CrawlerManager:
 
     # ── main worker loop ──────────────────────────────────
 
-    async def _run(self):
+    async def _run(self, worker_idx: int = 0):
         while True:
             self._heartbeat_at = time.time()
             try:
                 async with async_session_factory() as session:
                     task = await self._next_task(session)
                     if task is None:
+                        self._active_tasks.pop(worker_idx, None)
                         self._current_task = None
                         # check if any sessions are still running
                         running = (await session.execute(
@@ -330,21 +345,23 @@ class CrawlerManager:
                             )
                         )).scalar() or 0
                         if running == 0:
-                            logger.info("No running sessions — worker exiting")
+                            logger.info("Worker-%d: no running sessions — exiting", worker_idx)
                             return
-                        logger.debug("No pending tasks — sleeping 15s")
+                        logger.debug("Worker-%d: no pending tasks — sleeping 15s", worker_idx)
                         await asyncio.sleep(15)
                         continue
 
                     session_id = task.session_id
                     task_start = time.time()
-                    self._current_task = {
+                    task_info = {
                         "id": task.id,
                         "type": task.task_type,
                         "target": task.target,
                         "session_id": session_id,
                         "started_at": datetime.now(timezone.utc).isoformat(),
                     }
+                    self._active_tasks[worker_idx] = task_info
+                    self._current_task = task_info
 
                     await self._log_event(
                         "task_start",
@@ -427,6 +444,7 @@ class CrawlerManager:
                             )
 
                     task.processed_at = datetime.now(timezone.utc)
+                    self._active_tasks.pop(worker_idx, None)
                     self._current_task = None
                     await session.commit()
 
@@ -436,11 +454,12 @@ class CrawlerManager:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._last_error = f"Loop error: {exc}"
+                self._last_error = f"Worker-{worker_idx} loop error: {exc}"
+                self._active_tasks.pop(worker_idx, None)
                 self._current_task = None
-                logger.error("Worker loop error: %s", exc, exc_info=True)
+                logger.error("Worker-%d loop error: %s", worker_idx, exc, exc_info=True)
                 await self._log_event(
-                    "worker_crash", f"Worker loop error: {exc}",
+                    "worker_crash", f"Worker-{worker_idx} loop error: {exc}",
                     level="error",
                 )
                 await asyncio.sleep(10)
@@ -887,7 +906,10 @@ class CrawlerManager:
             "worker_healthy": self.worker_running and (heartbeat_ago is not None and heartbeat_ago < 60),
             "heartbeat_seconds_ago": heartbeat_ago,
             "worker_uptime_seconds": uptime,
+            "num_workers": self.NUM_WORKERS,
+            "active_workers": sum(1 for w in self._workers if not w.done()),
             "current_task": self._current_task,
+            "active_tasks": list(self._active_tasks.values()),
             "tasks_per_minute": round(self.tasks_per_minute, 2),
             "sessions": len(sessions),
             "running_sessions": sum(1 for s in sessions if s["status"] == "running"),
