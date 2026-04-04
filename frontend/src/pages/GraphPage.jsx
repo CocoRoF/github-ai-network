@@ -375,37 +375,38 @@ export default function GraphPage() {
               onNodeClick={handleNodeClick}
             />
           )}
+
+          {/* Modals inside graph-container so they appear in fullscreen */}
+          {showStatsModal && (
+            <StatsModal
+              graphData={graphData}
+              onClose={() => setShowStatsModal(false)}
+              onNodeClick={(node) => {
+                setShowStatsModal(false);
+                const graphNode = graphData.nodes.find((n) => n.id === node.id);
+                handleNodeClick(graphNode || node);
+              }}
+            />
+          )}
+
+          {detailNode && (
+            <NodeDetailModal
+              node={detailNode}
+              graphData={graphData}
+              adjacencyMap={adjacencyMap}
+              onClose={() => setDetailNode(null)}
+              onNodeNavigate={(navNode) => {
+                setDetailNode(null);
+                const target = graphData.nodes.find((n) => n.id === navNode.id);
+                if (target) {
+                  focusNode(target);
+                  handleNodeClick(target);
+                }
+              }}
+            />
+          )}
         </div>
       </main>
-
-      {showStatsModal && (
-        <StatsModal
-          graphData={graphData}
-          onClose={() => setShowStatsModal(false)}
-          onNodeClick={(node) => {
-            setShowStatsModal(false);
-            const graphNode = graphData.nodes.find((n) => n.id === node.id);
-            handleNodeClick(graphNode || node);
-          }}
-        />
-      )}
-
-      {detailNode && (
-        <NodeDetailModal
-          node={detailNode}
-          graphData={graphData}
-          adjacencyMap={adjacencyMap}
-          onClose={() => setDetailNode(null)}
-          onNodeNavigate={(navNode) => {
-            setDetailNode(null);
-            const target = graphData.nodes.find((n) => n.id === navNode.id);
-            if (target) {
-              focusNode(target);
-              handleNodeClick(target);
-            }
-          }}
-        />
-      )}
     </div>
   );
 }

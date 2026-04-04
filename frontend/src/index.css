@@ -1371,6 +1371,66 @@ input[type="checkbox"] {
   font-weight: 600;
   color: var(--text-primary);
 }
+/* author header with avatar */
+.nd-author-header {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.nd-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.nd-author-identity {
+  min-width: 0;
+  flex: 1;
+}
+.nd-author-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.nd-author-bio {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+.nd-author-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.nd-author-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.nd-detail-icon {
+  font-size: 12px;
+}
+
+.nd-homepage-link {
+  display: inline-block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-decoration: none;
+  padding: 4px 0;
+  font-weight: 400;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.nd-homepage-link:hover {
+  color: var(--blue);
+  text-decoration: underline;
+}
 .nd-github-link {
   display: inline-block;
   color: var(--blue);
@@ -1381,6 +1441,9 @@ input[type="checkbox"] {
 }
 .nd-github-link:hover {
   text-decoration: underline;
+}
+.nd-meta-fork {
+  border-left: 2px solid #8888cc;
 }
 .nd-empty {
   color: var(--text-secondary);
@@ -1518,25 +1581,18 @@ input[type="checkbox"] {
   position: absolute;
   inset: 0;
 }
-.nd-graph-tooltip {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  background: rgba(13, 17, 23, 0.92);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: var(--text-primary);
-  pointer-events: none;
+/* Hide graph controls inside the modal mini-graph */
+.nd-graph-canvas-wrap .graph-controls {
+  display: none;
+}
+.nd-graph-loading {
   display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 300px;
-}
-.nd-tooltip-val {
+  justify-content: center;
+  width: 100%;
+  height: 100%;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 /* ── Stats Modal ───────────────────────────────────── */

@@ -1,24 +1,8 @@
-import { useEffect, useRef, useMemo, useState, useCallback } from "react";
-import {
-  forceSimulation,
-  forceManyBody,
-  forceLink,
-  forceCenter,
-} from "d3-force-3d";
+import { useEffect, useRef, useMemo, useState, useCallback, lazy, Suspense } from "react";
+
+const GraphView3DLarge = lazy(() => import("./GraphView3DLarge"));
 
 /* ── constants ──────────────────────────────────────── */
-const NODE_COLORS = {
-  author: "#58a6ff",
-  repo: "#3fb950",
-  topic: "#d29922",
-};
-const LINK_COLORS = {
-  owns: "#58a6ff",
-  contributes: "#8b949e",
-  has_topic: "#d29922",
-  coworker: "#da70d6",
-  forked_from: "#8888cc",
-};
 const MAX_SUBGRAPH = 250;
 
 /* ── helpers ────────────────────────────────────────── */
@@ -106,10 +90,20 @@ function getDirectConnections(nodeId, subgraph) {
 
 function getGitHubUrl(node) {
   if (node.url) return node.url;
-  if (node.type === "author") return `https://github.com/${node.id}`;
-  if (node.type === "repo") return `https://github.com/${node.id}`;
-  if (node.type === "topic") return `https://github.com/topics/${node.id}`;
+  if (node.type === "author") return `https://github.com/${node.label || node.id}`;
+  if (node.type === "repo") return `https://github.com/${node.label || node.id}`;
+  if (node.type === "topic") return `https://github.com/topics/${node.label || node.id}`;
   return null;
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return null;
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return null;
+  }
 }
 
 /* ── connection group sub-component ─────────────────── */
@@ -133,9 +127,9 @@ function ConnectionGroup({ title, type, nodes, onNodeClick }) {
             onClick={() => onNodeClick(n)}
           >
             <span className="nd-conn-label">{getLabelText(n)}</span>
-            {type === "repo" && n.val > 1 && (
+            {type === "repo" && n.stars != null && (
               <span className="nd-conn-stars">
-                ★ {Number(n.val).toLocaleString()}
+                ★ {Number(n.stars).toLocaleString()}
               </span>
             )}
           </div>
@@ -150,6 +144,26 @@ function ConnectionGroup({ title, type, nodes, onNodeClick }) {
   );
 }
 
+/* ── graph style for modal mini-graph ─────────────── */
+const MODAL_GRAPH_STYLE = {
+  nodeMinSize: 1,
+  nodeMaxSize: 12,
+  labelScale: 1.0,
+  labelThreshold: 0.8,
+  showLabels: true,
+  edgeOpacity: 0.18,
+  edgeWidthScale: 1.0,
+  bloomStrength: 0.5,
+  bloomRadius: 0.08,
+  bloomThreshold: 0.1,
+  particleSpeed: 0.004,
+  particleCount: 1,
+  showParticles: false,
+  autoOrbit: true,
+  starField: true,
+  fogDensity: 0.0004,
+};
+
 /* ── main component ─────────────────────────────────── */
 export default function NodeDetailModal({
   node,
@@ -158,14 +172,22 @@ export default function NodeDetailModal({
   onClose,
   onNodeNavigate,
 }) {
-  const canvasRef = useRef(null);
-  const [hoveredNode, setHoveredNode] = useState(null);
-  const simNodesRef = useRef([]);
+  const miniGraphRef = useRef();
 
   const subgraph = useMemo(
     () => buildSubgraph(node.id, graphData, adjacencyMap, 3),
     [node.id, graphData, adjacencyMap]
   );
+
+  // Build subgraph data with raw source/target ids (not d3 objects)
+  const subgraphData = useMemo(() => ({
+    nodes: subgraph.nodes.map((n) => ({ ...n })),
+    links: subgraph.links.map((l) => ({
+      ...l,
+      source: l.source?.id ?? l.source,
+      target: l.target?.id ?? l.target,
+    })),
+  }), [subgraph]);
 
   const connections = useMemo(
     () => getDirectConnections(node.id, subgraph),
@@ -195,193 +217,20 @@ export default function NodeDetailModal({
     return () => window.removeEventListener("keydown", handler, true);
   }, [onClose]);
 
-  /* ── 2D force-directed mini graph on Canvas ───────── */
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || subgraph.nodes.length === 0) return;
-
-    const container = canvas.parentElement;
-    const width = container.clientWidth;
-    const height = container.clientHeight;
-    if (width === 0 || height === 0) return;
-
-    const dpr = Math.min(window.devicePixelRatio, 2);
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    canvas.style.width = width + "px";
-    canvas.style.height = height + "px";
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-
-    // Simulation nodes
-    const simNodes = subgraph.nodes.map((n) => {
-      const hop = subgraph.hops.get(n.id) ?? 3;
-      return {
-        id: n.id,
-        label: n.label || n.id,
-        type: n.type,
-        val: n.val || 1,
-        hop,
-        x: (Math.random() - 0.5) * width * 0.3,
-        y: (Math.random() - 0.5) * height * 0.3,
-      };
-    });
-
-    // Fix center node at origin
-    const centerNode = simNodes.find((n) => n.id === node.id);
-    if (centerNode) {
-      centerNode.fx = 0;
-      centerNode.fy = 0;
-    }
-    simNodesRef.current = simNodes;
-
-    const simLinks = subgraph.links.map((l) => ({
-      source: l.source?.id ?? l.source,
-      target: l.target?.id ?? l.target,
-      type: l.type,
-    }));
-
-    const nc = simNodes.length;
-    const sim = forceSimulation(simNodes, 2)
-      .force(
-        "charge",
-        forceManyBody()
-          .strength(nc > 200 ? -40 : nc > 80 ? -70 : -120)
-          .distanceMax(nc > 200 ? 200 : 300)
-      )
-      .force(
-        "link",
-        forceLink(simLinks)
-          .id((d) => d.id)
-          .distance(nc > 200 ? 25 : nc > 80 ? 40 : 60)
-          .strength(0.3)
-      )
-      .force("center", forceCenter())
-      .alphaDecay(0.04)
-      .velocityDecay(0.4);
-
-    let animFrame;
-
-    function render() {
-      ctx.clearRect(0, 0, width, height);
-      ctx.save();
-      ctx.translate(width / 2, height / 2);
-
-      // ── Edges ──
-      for (const link of simLinks) {
-        const s = link.source;
-        const t = link.target;
-        if (typeof s !== "object" || typeof t !== "object") continue;
-        const maxHop = Math.max(s.hop ?? 3, t.hop ?? 3);
-        ctx.beginPath();
-        ctx.moveTo(s.x, s.y);
-        ctx.lineTo(t.x, t.y);
-        ctx.strokeStyle = LINK_COLORS[link.type] || "#8b949e";
-        ctx.globalAlpha = maxHop <= 1 ? 0.4 : maxHop <= 2 ? 0.18 : 0.07;
-        ctx.lineWidth = maxHop <= 1 ? 1.5 : 1;
-        ctx.stroke();
+  // Handle click on mini-graph node
+  const handleMiniGraphClick = useCallback(
+    (clickedNode) => {
+      if (clickedNode && clickedNode.id !== node.id) {
+        onNodeNavigate(clickedNode);
       }
-
-      // ── Nodes ──
-      for (const n of simNodes) {
-        const isCenter = n.id === node.id;
-        const baseR = Math.max(3, 3 + (Math.log(n.val + 1) / Math.log(100)) * 6);
-        const radius = isCenter ? 14 : Math.max(3, baseR - n.hop * 0.8);
-        const alpha =
-          n.hop === 0 ? 1 : n.hop === 1 ? 0.9 : n.hop === 2 ? 0.55 : 0.3;
-
-        ctx.globalAlpha = alpha;
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = NODE_COLORS[n.type] || "#8b949e";
-        ctx.fill();
-
-        if (isCenter) {
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = "#ffffff";
-          ctx.lineWidth = 2.5;
-          ctx.stroke();
-          // Glow
-          ctx.save();
-          ctx.shadowColor = NODE_COLORS[n.type] || "#ffffff";
-          ctx.shadowBlur = 15;
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, radius + 3, 0, Math.PI * 2);
-          ctx.strokeStyle = NODE_COLORS[n.type] || "#ffffff";
-          ctx.lineWidth = 1.5;
-          ctx.globalAlpha = 0.6;
-          ctx.stroke();
-          ctx.restore();
-        }
-
-        n._radius = radius;
-      }
-
-      // ── Labels (hop 0–1, or high-val hop 2) ──
-      ctx.textAlign = "center";
-      ctx.textBaseline = "bottom";
-      for (const n of simNodes) {
-        if (n.hop > 1 && n.val < 50) continue;
-        const isCenter = n.id === node.id;
-        const fontSize = isCenter ? 13 : n.hop <= 1 ? 11 : 9;
-        ctx.font = `bold ${fontSize}px -apple-system, "Segoe UI", sans-serif`;
-        ctx.globalAlpha = isCenter ? 1 : n.hop <= 1 ? 0.8 : 0.4;
-        const label = getLabelText(n);
-        const yOff = (n._radius || 5) + 4;
-        // Shadow
-        ctx.fillStyle = "rgba(0,0,0,0.85)";
-        ctx.fillText(label, n.x + 1, n.y - yOff + 1);
-        // Text
-        ctx.fillStyle = isCenter
-          ? "#ffffff"
-          : NODE_COLORS[n.type] || "#cccccc";
-        ctx.fillText(label, n.x, n.y - yOff);
-      }
-
-      ctx.restore();
-    }
-
-    sim.on("tick", () => {
-      cancelAnimationFrame(animFrame);
-      animFrame = requestAnimationFrame(render);
-    });
-
-    return () => {
-      sim.stop();
-      cancelAnimationFrame(animFrame);
-    };
-  }, [subgraph, node.id]);
-
-  /* ── Canvas mouse interaction ─────────────────────── */
-  const hitTest = useCallback(
-    (e) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return null;
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left - rect.width / 2;
-      const my = e.clientY - rect.top - rect.height / 2;
-      for (const n of simNodesRef.current) {
-        const dx = n.x - mx;
-        const dy = n.y - my;
-        const r = (n._radius || 5) + 5;
-        if (dx * dx + dy * dy < r * r) return n;
-      }
-      return null;
     },
-    []
+    [node.id, onNodeNavigate]
   );
 
-  const handleCanvasMove = useCallback(
-    (e) => setHoveredNode(hitTest(e)),
-    [hitTest]
-  );
-
-  const handleCanvasClick = useCallback(
-    (e) => {
-      const hit = hitTest(e);
-      if (hit && hit.id !== node.id) onNodeNavigate(hit);
-    },
-    [hitTest, node.id, onNodeNavigate]
+  // Selected node for highlighting in mini graph
+  const selectedNodeForMini = useMemo(
+    () => subgraph.nodes.find((n) => n.id === node.id) || node,
+    [subgraph.nodes, node]
   );
 
   /* ── Render ───────────────────────────────────────── */
@@ -412,12 +261,42 @@ export default function NodeDetailModal({
         <div className="nd-body">
           {/* Left: info */}
           <div className="nd-info">
+            {/* Author avatar & identity */}
+            {node.type === "author" && (
+              <div className="nd-section nd-author-header">
+                {node.avatar_url && (
+                  <img
+                    src={node.avatar_url}
+                    alt={nodeLabel}
+                    className="nd-avatar"
+                  />
+                )}
+                <div className="nd-author-identity">
+                  {node.name && <div className="nd-author-name">{node.name}</div>}
+                  {node.bio && <p className="nd-author-bio">{node.bio}</p>}
+                  <div className="nd-author-details">
+                    {node.company && (
+                      <span className="nd-author-detail">
+                        <span className="nd-detail-icon">🏢</span> {node.company}
+                      </span>
+                    )}
+                    {node.location && (
+                      <span className="nd-author-detail">
+                        <span className="nd-detail-icon">📍</span> {node.location}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="nd-section">
               <h3>Overview</h3>
               {node.description && (
                 <p className="nd-description">{node.description}</p>
               )}
               <div className="nd-meta-grid">
+                {/* Repo metadata */}
                 {node.type === "repo" && node.stars != null && (
                   <div className="nd-meta-item">
                     <span className="nd-meta-label">Stars</span>
@@ -434,12 +313,58 @@ export default function NodeDetailModal({
                     </span>
                   </div>
                 )}
+                {node.type === "repo" && node.watchers != null && (
+                  <div className="nd-meta-item">
+                    <span className="nd-meta-label">Watchers</span>
+                    <span className="nd-meta-value">
+                      👁 {Number(node.watchers).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                {node.type === "repo" && node.open_issues != null && (
+                  <div className="nd-meta-item">
+                    <span className="nd-meta-label">Open Issues</span>
+                    <span className="nd-meta-value">
+                      {Number(node.open_issues).toLocaleString()}
+                    </span>
+                  </div>
+                )}
                 {node.type === "repo" && node.language && (
                   <div className="nd-meta-item">
                     <span className="nd-meta-label">Language</span>
                     <span className="nd-meta-value">{node.language}</span>
                   </div>
                 )}
+                {node.type === "repo" && node.license && (
+                  <div className="nd-meta-item">
+                    <span className="nd-meta-label">License</span>
+                    <span className="nd-meta-value">{node.license}</span>
+                  </div>
+                )}
+                {node.type === "repo" && node.is_fork && (
+                  <div className="nd-meta-item nd-meta-fork">
+                    <span className="nd-meta-label">Fork</span>
+                    <span className="nd-meta-value">Yes</span>
+                  </div>
+                )}
+                {node.type === "repo" && node.repo_created_at && (
+                  <div className="nd-meta-item">
+                    <span className="nd-meta-label">Created</span>
+                    <span className="nd-meta-value">
+                      {formatDate(node.repo_created_at)}
+                    </span>
+                  </div>
+                )}
+                {node.type === "repo" && node.repo_updated_at && (
+                  <div className="nd-meta-item">
+                    <span className="nd-meta-label">Last Updated</span>
+                    <span className="nd-meta-value">
+                      {formatDate(node.repo_updated_at)}
+                    </span>
+                  </div>
+                )}
+
+                {/* Author metadata */}
                 {node.type === "author" && node.followers != null && (
                   <div className="nd-meta-item">
                     <span className="nd-meta-label">Followers</span>
@@ -448,12 +373,32 @@ export default function NodeDetailModal({
                     </span>
                   </div>
                 )}
+                {node.type === "author" && node.following != null && (
+                  <div className="nd-meta-item">
+                    <span className="nd-meta-label">Following</span>
+                    <span className="nd-meta-value">
+                      {Number(node.following).toLocaleString()}
+                    </span>
+                  </div>
+                )}
                 {node.type === "author" && node.public_repos != null && (
                   <div className="nd-meta-item">
-                    <span className="nd-meta-label">Repos</span>
+                    <span className="nd-meta-label">Public Repos</span>
                     <span className="nd-meta-value">{node.public_repos}</span>
                   </div>
                 )}
+
+                {/* Topic metadata */}
+                {node.type === "topic" && node.repo_count != null && (
+                  <div className="nd-meta-item">
+                    <span className="nd-meta-label">Repositories</span>
+                    <span className="nd-meta-value">
+                      {Number(node.repo_count).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+
+                {/* Common */}
                 {node.val != null && (
                   <div className="nd-meta-item">
                     <span className="nd-meta-label">Weight</span>
@@ -461,6 +406,19 @@ export default function NodeDetailModal({
                   </div>
                 )}
               </div>
+
+              {/* Homepage link for repos */}
+              {node.type === "repo" && node.homepage && (
+                <a
+                  href={node.homepage}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="nd-homepage-link"
+                >
+                  🌐 {node.homepage}
+                </a>
+              )}
+
               {ghUrl && (
                 <a
                   href={ghUrl}
@@ -522,7 +480,7 @@ export default function NodeDetailModal({
             </div>
           </div>
 
-          {/* Right: mini graph */}
+          {/* Right: 3D mini graph */}
           <div className="nd-graph">
             <div className="nd-graph-header">
               <span>3-hop Neighborhood</span>
@@ -531,27 +489,20 @@ export default function NodeDetailModal({
               </span>
             </div>
             <div className="nd-graph-canvas-wrap">
-              <canvas
-                ref={canvasRef}
-                onMouseMove={handleCanvasMove}
-                onClick={handleCanvasClick}
-                style={{ cursor: hoveredNode ? "pointer" : "default" }}
-              />
-              {hoveredNode && (
-                <div className="nd-graph-tooltip">
-                  <span
-                    className={`nd-type-badge nd-type-${hoveredNode.type}`}
-                  >
-                    {hoveredNode.type}
-                  </span>
-                  <span>{hoveredNode.label || hoveredNode.id}</span>
-                  {hoveredNode.val > 1 && (
-                    <span className="nd-tooltip-val">
-                      ({hoveredNode.val})
-                    </span>
-                  )}
-                </div>
-              )}
+              <Suspense
+                fallback={
+                  <div className="nd-graph-loading">Loading 3D…</div>
+                }
+              >
+                <GraphView3DLarge
+                  graphData={subgraphData}
+                  onNodeClick={handleMiniGraphClick}
+                  onNodeDoubleClick={handleMiniGraphClick}
+                  selectedNode={selectedNodeForMini}
+                  graphRef={miniGraphRef}
+                  graphStyle={MODAL_GRAPH_STYLE}
+                />
+              </Suspense>
             </div>
           </div>
         </div>

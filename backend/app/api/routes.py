@@ -3,7 +3,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Author, Repository, Topic
+from app.models import Author, Repository, Topic, RepoTopic
 from app.graph.builder import GraphBuilder
 
 router = APIRouter()
@@ -76,7 +76,15 @@ async def get_node_detail(
             "id": node_id, "type": "repo", "label": repo.full_name,
             "description": repo.description, "stars": repo.stars,
             "forks": repo.forks_count, "language": repo.language,
-            "license": repo.license_name, "url": f"https://github.com/{repo.full_name}",
+            "license": repo.license_name,
+            "watchers": repo.watchers,
+            "open_issues": repo.open_issues,
+            "is_fork": repo.is_fork,
+            "homepage": repo.homepage,
+            "default_branch": repo.default_branch,
+            "repo_created_at": repo.repo_created_at.isoformat() if repo.repo_created_at else None,
+            "repo_updated_at": repo.repo_updated_at.isoformat() if repo.repo_updated_at else None,
+            "url": f"https://github.com/{repo.full_name}",
         }
     elif node_type == "author":
         author = (await db.execute(select(Author).where(Author.id == db_id))).scalar_one_or_none()
@@ -85,14 +93,21 @@ async def get_node_detail(
         return {
             "id": node_id, "type": "author", "label": author.login,
             "name": author.name, "bio": author.bio, "company": author.company,
-            "followers": author.followers, "avatar_url": author.avatar_url,
+            "location": author.location,
+            "followers": author.followers, "following": author.following,
+            "public_repos": author.public_repos,
+            "avatar_url": author.avatar_url,
             "url": f"https://github.com/{author.login}",
         }
     elif node_type == "topic":
         topic = (await db.execute(select(Topic).where(Topic.id == db_id))).scalar_one_or_none()
         if not topic:
             return {"error": "Not found"}
-        return {"id": node_id, "type": "topic", "label": topic.name}
+        # Count how many repos have this topic
+        repo_count = (await db.execute(
+            select(func.count()).where(RepoTopic.topic_id == db_id)
+        )).scalar() or 0
+        return {"id": node_id, "type": "topic", "label": topic.name, "repo_count": repo_count}
 
     return {"error": "Unknown type"}
 
