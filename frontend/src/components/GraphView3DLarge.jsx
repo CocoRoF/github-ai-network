@@ -910,6 +910,7 @@ export default function GraphView3DLarge({
         source: l.source?.id ?? l.source,
         target: l.target?.id ?? l.target,
       })),
+      ...(style.alphaDecay ? { alphaDecay: style.alphaDecay } : {}),
     });
 
     // Cleanup

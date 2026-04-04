@@ -54,7 +54,7 @@ self.onmessage = (e) => {
     const distMax = n > 50000 ? 1500 : n > 10000 ? 2000 : 3000;
     const theta = n > 20000 ? 1.5 : n > 5000 ? 1.2 : 0.9;
     const linkDist = n > 50000 ? 120 : n > 10000 ? 180 : 250;
-    const alphaDecay = n > 50000 ? 0.04 : n > 10000 ? 0.03 : 0.02;
+    const alphaDecay = msg.alphaDecay || (n > 50000 ? 0.04 : n > 10000 ? 0.03 : 0.02);
 
     sim = forceSimulation(simNodes, 3)
       .force(

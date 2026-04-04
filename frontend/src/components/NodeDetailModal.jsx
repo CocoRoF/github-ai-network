@@ -159,9 +159,10 @@ const MODAL_GRAPH_STYLE = {
   particleSpeed: 0.004,
   particleCount: 1,
   showParticles: false,
-  autoOrbit: true,
+  autoOrbit: false,
   starField: true,
   fogDensity: 0.0004,
+  alphaDecay: 0.08, // Fast settling for modal subgraph
 };
 
 /* ── main component ─────────────────────────────────── */

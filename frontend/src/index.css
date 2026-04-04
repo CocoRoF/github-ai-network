@@ -1213,7 +1213,7 @@ input[type="checkbox"] {
 
 /* ── Node Detail Modal ─────────────────────────────── */
 .nd-overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 1000;
   background: rgba(0, 0, 0, 0.55);
@@ -1228,9 +1228,9 @@ input[type="checkbox"] {
   to { opacity: 1; }
 }
 .nd-modal {
-  width: 92%;
-  height: 88%;
-  max-width: 1500px;
+  width: 90%;
+  height: 90%;
+  max-width: none;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 14px;
