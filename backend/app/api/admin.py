@@ -24,11 +24,17 @@ async def _github_api_get(path: str):
         headers["Authorization"] = f"token {settings.github_token}"
     async with httpx.AsyncClient(
         base_url=settings.github_api_base, headers=headers, timeout=15.0,
+        follow_redirects=True,
     ) as client:
         resp = await client.get(path)
         if resp.status_code == 200:
-            return resp.json()
-        return None
+            return {"ok": True, "data": resp.json()}
+        if resp.status_code == 403:
+            remaining = resp.headers.get("X-RateLimit-Remaining", "?")
+            return {"ok": False, "error": f"GitHub API rate limit exceeded (remaining: {remaining}). Try again later."}
+        if resp.status_code == 404:
+            return {"ok": False, "error": None}  # genuinely not found
+        return {"ok": False, "error": f"GitHub API returned {resp.status_code}"}
 
 
 # ── login ─────────────────────────────────────────────────
@@ -218,9 +224,10 @@ async def validate_target(
         if body.task_type == "fetch_repo":
             if "/" not in target:
                 return {"valid": False, "error": "Repository must be in owner/repo format"}
-            data = await _github_api_get(f"/repos/{target}")
-            if data is None:
-                return {"valid": False, "error": f"Repository '{target}' not found"}
+            result = await _github_api_get(f"/repos/{target}")
+            if not result["ok"]:
+                return {"valid": False, "error": result["error"] or f"Repository '{target}' not found"}
+            data = result["data"]
             return {
                 "valid": True,
                 "info": {
@@ -232,9 +239,10 @@ async def validate_target(
                 },
             }
         elif body.task_type == "fetch_user":
-            data = await _github_api_get(f"/users/{target}")
-            if data is None:
-                return {"valid": False, "error": f"User '{target}' not found"}
+            result = await _github_api_get(f"/users/{target}")
+            if not result["ok"]:
+                return {"valid": False, "error": result["error"] or f"User '{target}' not found"}
+            data = result["data"]
             return {
                 "valid": True,
                 "info": {
@@ -247,9 +255,10 @@ async def validate_target(
                 },
             }
         elif body.task_type == "search_repos":
-            data = await _github_api_get(f"/search/repositories?q={target}&sort=stars&per_page=3")
-            if data is None:
-                return {"valid": False, "error": "Search request failed"}
+            result = await _github_api_get(f"/search/repositories?q={target}&sort=stars&per_page=3")
+            if not result["ok"]:
+                return {"valid": False, "error": result["error"] or "Search request failed"}
+            data = result["data"]
             items = data.get("items", [])
             return {
                 "valid": len(items) > 0,
