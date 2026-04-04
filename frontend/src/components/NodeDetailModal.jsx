@@ -175,6 +175,11 @@ export default function NodeDetailModal({
 }) {
   const miniGraphRef = useRef();
 
+  const modalGraphStyle = useMemo(
+    () => ({ ...MODAL_GRAPH_STYLE, centerNodeId: node.id }),
+    [node.id]
+  );
+
   const subgraph = useMemo(
     () => buildSubgraph(node.id, graphData, adjacencyMap, 3),
     [node.id, graphData, adjacencyMap]
@@ -501,7 +506,7 @@ export default function NodeDetailModal({
                   onNodeDoubleClick={handleMiniGraphClick}
                   selectedNode={selectedNodeForMini}
                   graphRef={miniGraphRef}
-                  graphStyle={MODAL_GRAPH_STYLE}
+                  graphStyle={modalGraphStyle}
                 />
               </Suspense>
             </div>

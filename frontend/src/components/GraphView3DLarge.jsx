@@ -623,7 +623,9 @@ export default function GraphView3DLarge({
     for (let i = 0; i < nc; i++) {
       const raw = nodes[i].val || 1;
       const tt = vMax > vMin ? (raw - vMin) / (vMax - vMin) : 0;
-      nodeScales[i] = s.nodeMinSize + tt * (s.nodeMaxSize - s.nodeMinSize);
+      let sc = s.nodeMinSize + tt * (s.nodeMaxSize - s.nodeMinSize);
+      if (s.centerNodeId && nodes[i].id === s.centerNodeId) sc *= 3;
+      nodeScales[i] = sc;
     }
 
     dataRef.current = {
@@ -1094,7 +1096,9 @@ export default function GraphView3DLarge({
     for (let i = 0; i < nc; i++) {
       const raw = nodes[i].val || 1;
       const tt = vMax > vMin ? (raw - vMin) / (vMax - vMin) : 0;
-      newScales[i] = style.nodeMinSize + tt * (style.nodeMaxSize - style.nodeMinSize);
+      let sc = style.nodeMinSize + tt * (style.nodeMaxSize - style.nodeMinSize);
+      if (style.centerNodeId && nodes[i].id === style.centerNodeId) sc *= 3;
+      newScales[i] = sc;
     }
     dataRef.current.scales = newScales;
 
