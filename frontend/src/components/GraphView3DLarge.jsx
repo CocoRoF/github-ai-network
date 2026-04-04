@@ -502,17 +502,12 @@ export default function GraphView3DLarge({
     const _rotAxis = new THREE.Vector3();
     const _quat = new THREE.Quaternion();
 
-    // ── fly state: velocity with acceleration / friction ──
-    const fly = {
-      thrust: 0,    // forward/backward velocity
-      yaw: 0,       // left/right angular velocity
-      pitch: 0,     // up/down angular velocity
-    };
-    const FLY_ACCEL = 0.04;       // acceleration per frame
-    const FLY_FRICTION = 0.92;    // velocity decay each frame (1 = no decay)
-    const FLY_MAX_THRUST = 3.0;   // max thrust velocity
-    const FLY_MAX_TURN = 0.012;   // max turn rate (rad/frame)
-    const FLY_TURN_ACCEL = 0.001; // turn acceleration per frame
+    // ── fly state: thrust has inertia, turning is instant ──
+    const fly = { thrust: 0 };
+    const FLY_ACCEL = 0.04;       // thrust acceleration per frame
+    const FLY_FRICTION = 0.92;    // thrust decay when key released
+    const FLY_MAX_THRUST = 3.0;   // max thrust velocity cap
+    const FLY_TURN_RATE = 0.008;  // instant turn rate (rad/frame)
 
     function animate() {
       animFrame = requestAnimationFrame(animate);
@@ -541,31 +536,15 @@ export default function GraphView3DLarge({
         if (Math.abs(fly.thrust) < 0.001) fly.thrust = 0;
       }
 
-      // ── yaw input (turn left/right) ──
-      const yawInput =
+      // ── yaw: instant turn left/right ──
+      const yaw =
         (keys.has("a") || keys.has("arrowleft") ? 1 : 0) +
         (keys.has("d") || keys.has("arrowright") ? -1 : 0);
 
-      if (yawInput !== 0) {
-        fly.yaw += yawInput * FLY_TURN_ACCEL;
-        fly.yaw = Math.max(-FLY_MAX_TURN, Math.min(FLY_MAX_TURN, fly.yaw));
-      } else {
-        fly.yaw *= FLY_FRICTION;
-        if (Math.abs(fly.yaw) < 0.0001) fly.yaw = 0;
-      }
-
-      // ── pitch input (climb/dive) ──
-      const pitchInput =
+      // ── pitch: instant climb/dive ──
+      const pitch =
         (keys.has("q") || keys.has(" ") ? 1 : 0) +
         (keys.has("e") || keys.has("shift") ? -1 : 0);
-
-      if (pitchInput !== 0) {
-        fly.pitch += pitchInput * FLY_TURN_ACCEL;
-        fly.pitch = Math.max(-FLY_MAX_TURN, Math.min(FLY_MAX_TURN, fly.pitch));
-      } else {
-        fly.pitch *= FLY_FRICTION;
-        if (Math.abs(fly.pitch) < 0.0001) fly.pitch = 0;
-      }
 
       // ── apply thrust (translate camera + target along look dir) ──
       if (Math.abs(fly.thrust) > 0.001) {
@@ -574,19 +553,19 @@ export default function GraphView3DLarge({
       }
 
       // ── apply yaw (rotate target around camera on Y axis) ──
-      if (Math.abs(fly.yaw) > 0.0001) {
+      if (yaw !== 0) {
         const ct = controls.target.clone().sub(camera.position);
         _rotAxis.copy(_flyUp);
-        _quat.setFromAxisAngle(_rotAxis, fly.yaw);
+        _quat.setFromAxisAngle(_rotAxis, yaw * FLY_TURN_RATE);
         ct.applyQuaternion(_quat);
         controls.target.copy(camera.position).add(ct);
       }
 
       // ── apply pitch (rotate target around camera on right axis) ──
-      if (Math.abs(fly.pitch) > 0.0001) {
+      if (pitch !== 0) {
         const ct = controls.target.clone().sub(camera.position);
         _rotAxis.copy(_flyRight);
-        _quat.setFromAxisAngle(_rotAxis, fly.pitch);
+        _quat.setFromAxisAngle(_rotAxis, pitch * FLY_TURN_RATE);
         ct.applyQuaternion(_quat);
         controls.target.copy(camera.position).add(ct);
       }
