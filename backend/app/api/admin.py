@@ -1,13 +1,34 @@
+import httpx
 from fastapi import APIRouter, Depends, Request, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func, update
 
 from app.api.auth import require_admin, verify_password, create_token
+from app.config import settings
 from app.crawler.crawler import CrawlerManager
 from app.database import async_session_factory
 from app.models import CrawlTask, CrawlSession
 
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+# ── lightweight GitHub API helper (no crawler delays) ────
+
+async def _github_api_get(path: str):
+    """Direct GitHub API call for validation — bypasses crawler rate-limit delays."""
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "GitHub-AI-Network-Crawler/1.0",
+    }
+    if settings.github_token:
+        headers["Authorization"] = f"token {settings.github_token}"
+    async with httpx.AsyncClient(
+        base_url=settings.github_api_base, headers=headers, timeout=15.0,
+    ) as client:
+        resp = await client.get(path)
+        if resp.status_code == 200:
+            return resp.json()
+        return None
 
 
 # ── login ─────────────────────────────────────────────────
@@ -189,9 +210,6 @@ async def validate_target(
     _=Depends(require_admin),
 ):
     """Validate a target by checking it against GitHub API without adding to queue."""
-    crawler = _get_crawler(request)
-    gh = crawler.client
-
     target = body.target.strip()
     if not target:
         raise HTTPException(status_code=400, detail="Target cannot be empty")
@@ -200,7 +218,7 @@ async def validate_target(
         if body.task_type == "fetch_repo":
             if "/" not in target:
                 return {"valid": False, "error": "Repository must be in owner/repo format"}
-            data = await gh.get_repository(target)
+            data = await _github_api_get(f"/repos/{target}")
             if data is None:
                 return {"valid": False, "error": f"Repository '{target}' not found"}
             return {
@@ -214,7 +232,7 @@ async def validate_target(
                 },
             }
         elif body.task_type == "fetch_user":
-            data = await gh.get_user(target)
+            data = await _github_api_get(f"/users/{target}")
             if data is None:
                 return {"valid": False, "error": f"User '{target}' not found"}
             return {
@@ -229,8 +247,7 @@ async def validate_target(
                 },
             }
         elif body.task_type == "search_repos":
-            # For search queries, just do a quick search to verify it returns results
-            data = await gh.search_repositories(target, per_page=3)
+            data = await _github_api_get(f"/search/repositories?q={target}&sort=stars&per_page=3")
             if data is None:
                 return {"valid": False, "error": "Search request failed"}
             items = data.get("items", [])
