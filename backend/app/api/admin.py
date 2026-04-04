@@ -190,7 +190,7 @@ async def validate_target(
 ):
     """Validate a target by checking it against GitHub API without adding to queue."""
     crawler = _get_crawler(request)
-    gh = crawler.github
+    gh = crawler.client
 
     target = body.target.strip()
     if not target:
@@ -201,11 +201,13 @@ async def validate_target(
             if "/" not in target:
                 return {"valid": False, "error": "Repository must be in owner/repo format"}
             data = await gh.get_repository(target)
+            if data is None:
+                return {"valid": False, "error": f"Repository '{target}' not found"}
             return {
                 "valid": True,
                 "info": {
                     "full_name": data.get("full_name"),
-                    "description": data.get("description", "")[:200],
+                    "description": (data.get("description") or "")[:200],
                     "stars": data.get("stargazers_count", 0),
                     "language": data.get("language"),
                     "owner": data.get("owner", {}).get("login"),
@@ -213,12 +215,14 @@ async def validate_target(
             }
         elif body.task_type == "fetch_user":
             data = await gh.get_user(target)
+            if data is None:
+                return {"valid": False, "error": f"User '{target}' not found"}
             return {
                 "valid": True,
                 "info": {
                     "login": data.get("login"),
                     "name": data.get("name"),
-                    "bio": data.get("bio", "")[:200] if data.get("bio") else None,
+                    "bio": (data.get("bio") or "")[:200] or None,
                     "followers": data.get("followers", 0),
                     "public_repos": data.get("public_repos", 0),
                     "avatar_url": data.get("avatar_url"),
@@ -227,6 +231,8 @@ async def validate_target(
         elif body.task_type == "search_repos":
             # For search queries, just do a quick search to verify it returns results
             data = await gh.search_repositories(target, per_page=3)
+            if data is None:
+                return {"valid": False, "error": "Search request failed"}
             items = data.get("items", [])
             return {
                 "valid": len(items) > 0,
