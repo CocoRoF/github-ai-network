@@ -422,6 +422,8 @@ export default function GraphView3DLarge({
     controls.zoomSpeed = 1.2;
     controls.minDistance = 10;
     controls.maxDistance = 30000;
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI * 2; // allow full vertical rotation
 
     // Minimal ambient for selection ring / other scene objects
     const ambient = new THREE.AmbientLight(0xffffff, 0.8);
@@ -498,7 +500,8 @@ export default function GraphView3DLarge({
     let animFrame;
     const _flyDir = new THREE.Vector3();
     const _flyRight = new THREE.Vector3();
-    const _flyUp = new THREE.Vector3(0, 1, 0);
+    const _flyUp = new THREE.Vector3();
+    const _worldUp = new THREE.Vector3(0, 1, 0);
     const _rotAxis = new THREE.Vector3();
     const _quat = new THREE.Quaternion();
 
@@ -506,7 +509,7 @@ export default function GraphView3DLarge({
     const fly = { thrust: 0 };
     const FLY_ACCEL = 0.006;      // thrust acceleration per frame
     const FLY_FRICTION = 0.92;    // thrust decay when key released
-    const FLY_MAX_THRUST = 0.25;  // max thrust velocity cap
+    const FLY_MAX_THRUST = 0.18;  // max thrust velocity cap
     const FLY_TURN_RATE = 0.008;  // instant turn rate (rad/frame)
 
     function animate() {
@@ -518,7 +521,8 @@ export default function GraphView3DLarge({
       const camToTarget = controls.target.clone().sub(camera.position);
       const lookDist = camToTarget.length();
       _flyDir.copy(camToTarget).normalize();
-      _flyRight.crossVectors(_flyDir, _flyUp).normalize();
+      // camera-relative right axis for free pitch rotation
+      _flyRight.crossVectors(_flyDir, camera.up).normalize();
 
       // scale acceleration by zoom distance (farther = faster)
       const distScale = Math.max(0.3, lookDist * 0.003);
@@ -552,22 +556,24 @@ export default function GraphView3DLarge({
         controls.target.addScaledVector(_flyDir, fly.thrust);
       }
 
-      // ── apply yaw (rotate target around camera on Y axis) ──
+      // ── apply yaw (rotate around world Y — keeps horizon stable) ──
       if (yaw !== 0) {
         const ct = controls.target.clone().sub(camera.position);
-        _rotAxis.copy(_flyUp);
-        _quat.setFromAxisAngle(_rotAxis, yaw * FLY_TURN_RATE);
+        _quat.setFromAxisAngle(_worldUp, yaw * FLY_TURN_RATE);
         ct.applyQuaternion(_quat);
         controls.target.copy(camera.position).add(ct);
+        // also rotate camera.up to stay consistent
+        camera.up.applyQuaternion(_quat);
       }
 
-      // ── apply pitch (rotate target around camera on right axis) ──
+      // ── apply pitch (rotate around camera-right — fully free, no gimbal lock) ──
       if (pitch !== 0) {
         const ct = controls.target.clone().sub(camera.position);
-        _rotAxis.copy(_flyRight);
-        _quat.setFromAxisAngle(_rotAxis, pitch * FLY_TURN_RATE);
+        _quat.setFromAxisAngle(_flyRight, pitch * FLY_TURN_RATE);
         ct.applyQuaternion(_quat);
         controls.target.copy(camera.position).add(ct);
+        // rotate camera.up so pitch can go past 180 degrees freely
+        camera.up.applyQuaternion(_quat);
       }
 
       if (selectionRing.visible) {
