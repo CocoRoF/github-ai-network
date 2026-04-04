@@ -223,21 +223,30 @@ export default function NodeDetailModal({
     return () => window.removeEventListener("keydown", handler, true);
   }, [onClose]);
 
-  // Handle click on mini-graph node
-  const handleMiniGraphClick = useCallback(
-    (clickedNode) => {
-      if (clickedNode && clickedNode.id !== node.id) {
-        onNodeNavigate(clickedNode);
-      }
-    },
-    [node.id, onNodeNavigate]
-  );
+  // Internal selection state for mini-graph (independent from main graph)
+  const [miniSelectedNode, setMiniSelectedNode] = useState(null);
 
-  // Selected node for highlighting in mini graph
-  const selectedNodeForMini = useMemo(
+  // Initialize mini selection to the center node once subgraph is ready
+  const centerNodeRef = useMemo(
     () => subgraph.nodes.find((n) => n.id === node.id) || node,
     [subgraph.nodes, node]
   );
+
+  // Handle click on mini-graph node — stays inside modal
+  const handleMiniGraphClick = useCallback(
+    (clickedNode) => {
+      if (clickedNode) {
+        setMiniSelectedNode(clickedNode);
+      }
+    },
+    []
+  );
+
+  // No-op for double-click in mini-graph (don't propagate)
+  const handleMiniGraphDoubleClick = useCallback(() => {}, []);
+
+  // Selected node for highlighting: use internal selection, default to center
+  const selectedNodeForMini = miniSelectedNode || centerNodeRef;
 
   /* ── Render ───────────────────────────────────────── */
   const nodeLabel = node.label || node.id;
@@ -503,7 +512,7 @@ export default function NodeDetailModal({
                 <GraphView3DLarge
                   graphData={subgraphData}
                   onNodeClick={handleMiniGraphClick}
-                  onNodeDoubleClick={handleMiniGraphClick}
+                  onNodeDoubleClick={handleMiniGraphDoubleClick}
                   selectedNode={selectedNodeForMini}
                   graphRef={miniGraphRef}
                   graphStyle={modalGraphStyle}
