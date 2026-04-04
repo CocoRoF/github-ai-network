@@ -57,6 +57,13 @@ export default function AdminPage() {
   const [logFilter, setLogFilter] = useState("");
   const logEndRef = useRef(null);
 
+  // Manual task injection state
+  const [addTask, setAddTask] = useState({ task_type: "fetch_repo", target: "" });
+  const [addTaskValidation, setAddTaskValidation] = useState(null); // null | { valid, info, error }
+  const [addTaskValidating, setAddTaskValidating] = useState(false);
+  const [addTaskSubmitting, setAddTaskSubmitting] = useState(false);
+  const [addTaskResult, setAddTaskResult] = useState(null); // null | { ok, message }
+
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
   /* ── login ──────────────────────────────────────────── */
@@ -185,6 +192,53 @@ export default function AdminPage() {
     if (action === "delete") { setSelectedSessionId(null); setSessionDetail(null); }
     await fetchSessions();
     if (action !== "delete" && selectedSessionId === id) await fetchSessionDetail(id);
+  };
+
+  /* ── manual task injection ──────────────────────────── */
+  const validateTarget = async () => {
+    if (!selectedSessionId || !addTask.target.trim()) return;
+    setAddTaskValidation(null);
+    setAddTaskValidating(true);
+    setAddTaskResult(null);
+    try {
+      const r = await fetch(`${API}/admin/sessions/${selectedSessionId}/validate-target`, {
+        method: "POST", headers,
+        body: JSON.stringify({ task_type: addTask.task_type, target: addTask.target.trim() }),
+      });
+      if (r.ok) {
+        setAddTaskValidation(await r.json());
+      } else {
+        const err = await r.json().catch(() => ({}));
+        setAddTaskValidation({ valid: false, error: err.detail || "Validation failed" });
+      }
+    } catch (_) {
+      setAddTaskValidation({ valid: false, error: "Connection error" });
+    }
+    setAddTaskValidating(false);
+  };
+
+  const submitTask = async () => {
+    if (!selectedSessionId || !addTask.target.trim()) return;
+    setAddTaskSubmitting(true);
+    setAddTaskResult(null);
+    try {
+      const r = await fetch(`${API}/admin/sessions/${selectedSessionId}/tasks`, {
+        method: "POST", headers,
+        body: JSON.stringify({ task_type: addTask.task_type, target: addTask.target.trim(), priority: 500 }),
+      });
+      if (r.ok) {
+        setAddTaskResult({ ok: true, message: "Task added to queue" });
+        setAddTask({ task_type: addTask.task_type, target: "" });
+        setAddTaskValidation(null);
+        fetchSessionDetail(selectedSessionId);
+      } else {
+        const err = await r.json().catch(() => ({}));
+        setAddTaskResult({ ok: false, message: err.detail || "Failed to add task" });
+      }
+    } catch (_) {
+      setAddTaskResult({ ok: false, message: "Connection error" });
+    }
+    setAddTaskSubmitting(false);
   };
 
   /* ── computed health ────────────────────────────────── */
@@ -413,6 +467,103 @@ export default function AdminPage() {
 
               {detailTab === "overview" && (
                 <div className="detail-overview">
+                  {/* ── Add Task to Queue ── */}
+                  <div className="add-task-section">
+                    <h3 className="add-task-title">Add to Crawl Queue</h3>
+                    <div className="add-task-form">
+                      <select
+                        className="admin-input add-task-select"
+                        value={addTask.task_type}
+                        onChange={(e) => {
+                          setAddTask({ task_type: e.target.value, target: "" });
+                          setAddTaskValidation(null);
+                          setAddTaskResult(null);
+                        }}
+                      >
+                        <option value="fetch_repo">Repository</option>
+                        <option value="fetch_user">User</option>
+                        <option value="search_repos">Search Query</option>
+                      </select>
+                      <input
+                        className="admin-input add-task-input"
+                        placeholder={
+                          addTask.task_type === "fetch_repo"
+                            ? "owner/repo (e.g. pytorch/pytorch)"
+                            : addTask.task_type === "fetch_user"
+                            ? "username (e.g. torvalds)"
+                            : "search query (e.g. topic:llm stars:>1000)"
+                        }
+                        value={addTask.target}
+                        onChange={(e) => {
+                          setAddTask({ ...addTask, target: e.target.value });
+                          setAddTaskValidation(null);
+                          setAddTaskResult(null);
+                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") validateTarget(); }}
+                      />
+                      <button
+                        className="btn btn-sm"
+                        onClick={validateTarget}
+                        disabled={!addTask.target.trim() || addTaskValidating}
+                      >
+                        {addTaskValidating ? "Checking…" : "Verify"}
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={submitTask}
+                        disabled={!addTaskValidation?.valid || addTaskSubmitting}
+                      >
+                        {addTaskSubmitting ? "Adding…" : "+ Add"}
+                      </button>
+                    </div>
+
+                    {/* Validation result */}
+                    {addTaskValidation && (
+                      <div className={`add-task-validation ${addTaskValidation.valid ? "valid" : "invalid"}`}>
+                        {addTaskValidation.valid ? (
+                          <div className="validation-info">
+                            <span className="validation-check">✓ Verified</span>
+                            {addTask.task_type === "fetch_repo" && addTaskValidation.info && (
+                              <span className="validation-detail">
+                                {addTaskValidation.info.full_name}
+                                {addTaskValidation.info.stars != null && <> · ★ {addTaskValidation.info.stars.toLocaleString()}</>}
+                                {addTaskValidation.info.language && <> · {addTaskValidation.info.language}</>}
+                                {addTaskValidation.info.description && (
+                                  <span className="validation-desc"> — {addTaskValidation.info.description}</span>
+                                )}
+                              </span>
+                            )}
+                            {addTask.task_type === "fetch_user" && addTaskValidation.info && (
+                              <span className="validation-detail">
+                                {addTaskValidation.info.login}
+                                {addTaskValidation.info.name && <> ({addTaskValidation.info.name})</>}
+                                {addTaskValidation.info.followers != null && <> · {addTaskValidation.info.followers.toLocaleString()} followers</>}
+                                {addTaskValidation.info.public_repos != null && <> · {addTaskValidation.info.public_repos} repos</>}
+                              </span>
+                            )}
+                            {addTask.task_type === "search_repos" && addTaskValidation.info && (
+                              <span className="validation-detail">
+                                {addTaskValidation.info.total_count?.toLocaleString()} results found
+                                {addTaskValidation.info.sample?.length > 0 && (
+                                  <> — e.g. {addTaskValidation.info.sample.map((r) => r.full_name).join(", ")}</>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="validation-error">✗ {addTaskValidation.error || "Not found"}</span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Submit result */}
+                    {addTaskResult && (
+                      <div className={`add-task-result ${addTaskResult.ok ? "success" : "error"}`}>
+                        {addTaskResult.message}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="detail-grid">
                     <div className="detail-item">
                       <span className="detail-label">Seed</span>

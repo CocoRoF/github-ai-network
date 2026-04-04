@@ -877,6 +877,87 @@ input[type="checkbox"] {
   background: rgba(248, 81, 73, 0.15);
 }
 
+/* ── add task to queue ─────────────────────────────── */
+.add-task-section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+.add-task-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+}
+.add-task-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.add-task-select {
+  width: 140px;
+  flex-shrink: 0;
+}
+.add-task-input {
+  flex: 1;
+  min-width: 200px;
+}
+.add-task-validation {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.add-task-validation.valid {
+  background: rgba(63, 185, 80, 0.08);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+  color: #3fb950;
+}
+.add-task-validation.invalid {
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  color: #f85149;
+}
+.validation-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.validation-check {
+  font-weight: 600;
+}
+.validation-detail {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.validation-desc {
+  opacity: 0.7;
+}
+.validation-error {
+  font-weight: 500;
+}
+.add-task-result {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.add-task-result.success {
+  background: rgba(63, 185, 80, 0.1);
+  color: #3fb950;
+}
+.add-task-result.error {
+  background: rgba(248, 81, 73, 0.1);
+  color: #f85149;
+}
+
 /* ── tasks table ───────────────────────────────────── */
 .tasks-table {
   border: 1px solid var(--border);

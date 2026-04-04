@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, Request, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 
 from app.api.auth import require_admin, verify_password, create_token
 from app.crawler.crawler import CrawlerManager
 from app.database import async_session_factory
-from app.models import CrawlTask
+from app.models import CrawlTask, CrawlSession
 
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -101,6 +101,148 @@ async def get_session_tasks(
 ):
     crawler = _get_crawler(request)
     return await crawler.get_session_tasks(session_id, status=status, limit=limit, offset=offset)
+
+
+# ── manual task injection ────────────────────────────────
+
+class AddTaskRequest(BaseModel):
+    task_type: str   # search_repos | fetch_repo | fetch_user
+    target: str      # query string, owner/repo, or username
+    priority: int = 500
+
+
+class ValidateTargetRequest(BaseModel):
+    task_type: str
+    target: str
+
+
+@admin_router.post("/sessions/{session_id}/tasks")
+async def add_task_to_session(
+    session_id: int,
+    body: AddTaskRequest,
+    request: Request,
+    _=Depends(require_admin),
+):
+    """Manually inject a task into an existing session's queue."""
+    if body.task_type not in ("search_repos", "fetch_repo", "fetch_user"):
+        raise HTTPException(status_code=400, detail="Invalid task_type. Must be search_repos, fetch_repo, or fetch_user")
+    if not body.target.strip():
+        raise HTTPException(status_code=400, detail="Target cannot be empty")
+
+    async with async_session_factory() as db:
+        session = await db.get(CrawlSession, session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Check if task already exists
+        existing = await db.execute(
+            select(CrawlTask).where(
+                CrawlTask.session_id == session_id,
+                CrawlTask.task_type == body.task_type,
+                CrawlTask.target == body.target.strip(),
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=409, detail="Task already exists in this session")
+
+        task = CrawlTask(
+            session_id=session_id,
+            task_type=body.task_type,
+            target=body.target.strip(),
+            depth=0,
+            priority=body.priority,
+            status="pending",
+        )
+        db.add(task)
+        await db.execute(
+            update(CrawlSession)
+            .where(CrawlSession.id == session_id)
+            .values(tasks_pending=CrawlSession.tasks_pending + 1)
+        )
+        await db.commit()
+        await db.refresh(task)
+
+    # Log event and ensure worker is running
+    crawler = _get_crawler(request)
+    await crawler._log_event(
+        "task_manual_add",
+        f"Manual task added: {body.task_type} → {body.target.strip()}",
+        session_id=session_id,
+        metadata={"task_type": body.task_type, "target": body.target.strip(), "priority": body.priority},
+    )
+    crawler._ensure_worker()
+
+    return {
+        "id": task.id,
+        "task_type": task.task_type,
+        "target": task.target,
+        "status": task.status,
+        "priority": task.priority,
+    }
+
+
+@admin_router.post("/sessions/{session_id}/validate-target")
+async def validate_target(
+    session_id: int,
+    body: ValidateTargetRequest,
+    request: Request,
+    _=Depends(require_admin),
+):
+    """Validate a target by checking it against GitHub API without adding to queue."""
+    crawler = _get_crawler(request)
+    gh = crawler.github
+
+    target = body.target.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="Target cannot be empty")
+
+    try:
+        if body.task_type == "fetch_repo":
+            if "/" not in target:
+                return {"valid": False, "error": "Repository must be in owner/repo format"}
+            data = await gh.get_repository(target)
+            return {
+                "valid": True,
+                "info": {
+                    "full_name": data.get("full_name"),
+                    "description": data.get("description", "")[:200],
+                    "stars": data.get("stargazers_count", 0),
+                    "language": data.get("language"),
+                    "owner": data.get("owner", {}).get("login"),
+                },
+            }
+        elif body.task_type == "fetch_user":
+            data = await gh.get_user(target)
+            return {
+                "valid": True,
+                "info": {
+                    "login": data.get("login"),
+                    "name": data.get("name"),
+                    "bio": data.get("bio", "")[:200] if data.get("bio") else None,
+                    "followers": data.get("followers", 0),
+                    "public_repos": data.get("public_repos", 0),
+                    "avatar_url": data.get("avatar_url"),
+                },
+            }
+        elif body.task_type == "search_repos":
+            # For search queries, just do a quick search to verify it returns results
+            data = await gh.search_repositories(target, per_page=3)
+            items = data.get("items", [])
+            return {
+                "valid": len(items) > 0,
+                "info": {
+                    "total_count": data.get("total_count", 0),
+                    "sample": [
+                        {"full_name": r.get("full_name"), "stars": r.get("stargazers_count", 0)}
+                        for r in items[:3]
+                    ],
+                },
+                "error": "No results found" if len(items) == 0 else None,
+            }
+        else:
+            return {"valid": False, "error": "Invalid task_type"}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
 
 
 # ── session logs ─────────────────────────────────────────
