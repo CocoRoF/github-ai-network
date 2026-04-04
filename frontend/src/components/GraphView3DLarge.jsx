@@ -499,61 +499,96 @@ export default function GraphView3DLarge({
     const _flyDir = new THREE.Vector3();
     const _flyRight = new THREE.Vector3();
     const _flyUp = new THREE.Vector3(0, 1, 0);
+    const _rotAxis = new THREE.Vector3();
+    const _quat = new THREE.Quaternion();
+
+    // ── fly state: velocity with acceleration / friction ──
+    const fly = {
+      thrust: 0,    // forward/backward velocity
+      yaw: 0,       // left/right angular velocity
+      pitch: 0,     // up/down angular velocity
+    };
+    const FLY_ACCEL = 0.04;       // acceleration per frame
+    const FLY_FRICTION = 0.92;    // velocity decay each frame (1 = no decay)
+    const FLY_MAX_THRUST = 3.0;   // max thrust velocity
+    const FLY_MAX_TURN = 0.012;   // max turn rate (rad/frame)
+    const FLY_TURN_ACCEL = 0.001; // turn acceleration per frame
 
     function animate() {
       animFrame = requestAnimationFrame(animate);
       controls.update();
 
-      // ── keyboard fly controls (WASD / arrows) ──
+      // ── keyboard fly controls — airplane with inertia ──
       const keys = keysPressedRef.current;
-      if (keys.size > 0) {
-        // camera look direction
-        _flyDir.subVectors(controls.target, camera.position).normalize();
-        // right vector
-        _flyRight.crossVectors(_flyDir, _flyUp).normalize();
+      const camToTarget = controls.target.clone().sub(camera.position);
+      const lookDist = camToTarget.length();
+      _flyDir.copy(camToTarget).normalize();
+      _flyRight.crossVectors(_flyDir, _flyUp).normalize();
 
-        const dist = camera.position.distanceTo(controls.target);
-        const speed = Math.max(1, dist * 0.02); // adaptive: faster when zoomed out
-        let dx = 0, dy = 0, dz = 0;
+      // scale acceleration by zoom distance (farther = faster)
+      const distScale = Math.max(0.3, lookDist * 0.003);
 
-        // forward / backward (along look direction)
-        if (keys.has("w") || keys.has("arrowup")) {
-          dx += _flyDir.x * speed;
-          dy += _flyDir.y * speed;
-          dz += _flyDir.z * speed;
-        }
-        if (keys.has("s") || keys.has("arrowdown")) {
-          dx -= _flyDir.x * speed;
-          dy -= _flyDir.y * speed;
-          dz -= _flyDir.z * speed;
-        }
-        // left / right (strafe)
-        if (keys.has("a") || keys.has("arrowleft")) {
-          dx -= _flyRight.x * speed;
-          dy -= _flyRight.y * speed;
-          dz -= _flyRight.z * speed;
-        }
-        if (keys.has("d") || keys.has("arrowright")) {
-          dx += _flyRight.x * speed;
-          dy += _flyRight.y * speed;
-          dz += _flyRight.z * speed;
-        }
-        // up / down
-        if (keys.has("q") || keys.has(" ")) {
-          dy += speed;
-        }
-        if (keys.has("e") || keys.has("shift")) {
-          dy -= speed;
-        }
+      // ── thrust input ──
+      const thrustInput =
+        (keys.has("w") || keys.has("arrowup") ? 1 : 0) +
+        (keys.has("s") || keys.has("arrowdown") ? -1 : 0);
 
-        if (dx !== 0 || dy !== 0 || dz !== 0) {
-          camera.position.x += dx;
-          camera.position.y += dy;
-          camera.position.z += dz;
-          controls.target.x += dx;
-          controls.target.y += dy;
-          controls.target.z += dz;
-        }
+      if (thrustInput !== 0) {
+        fly.thrust += thrustInput * FLY_ACCEL * distScale;
+        fly.thrust = Math.max(-FLY_MAX_THRUST * distScale, Math.min(FLY_MAX_THRUST * distScale, fly.thrust));
+      } else {
+        fly.thrust *= FLY_FRICTION;
+        if (Math.abs(fly.thrust) < 0.001) fly.thrust = 0;
+      }
+
+      // ── yaw input (turn left/right) ──
+      const yawInput =
+        (keys.has("a") || keys.has("arrowleft") ? 1 : 0) +
+        (keys.has("d") || keys.has("arrowright") ? -1 : 0);
+
+      if (yawInput !== 0) {
+        fly.yaw += yawInput * FLY_TURN_ACCEL;
+        fly.yaw = Math.max(-FLY_MAX_TURN, Math.min(FLY_MAX_TURN, fly.yaw));
+      } else {
+        fly.yaw *= FLY_FRICTION;
+        if (Math.abs(fly.yaw) < 0.0001) fly.yaw = 0;
+      }
+
+      // ── pitch input (climb/dive) ──
+      const pitchInput =
+        (keys.has("q") || keys.has(" ") ? 1 : 0) +
+        (keys.has("e") || keys.has("shift") ? -1 : 0);
+
+      if (pitchInput !== 0) {
+        fly.pitch += pitchInput * FLY_TURN_ACCEL;
+        fly.pitch = Math.max(-FLY_MAX_TURN, Math.min(FLY_MAX_TURN, fly.pitch));
+      } else {
+        fly.pitch *= FLY_FRICTION;
+        if (Math.abs(fly.pitch) < 0.0001) fly.pitch = 0;
+      }
+
+      // ── apply thrust (translate camera + target along look dir) ──
+      if (Math.abs(fly.thrust) > 0.001) {
+        camera.position.addScaledVector(_flyDir, fly.thrust);
+        controls.target.addScaledVector(_flyDir, fly.thrust);
+      }
+
+      // ── apply yaw (rotate target around camera on Y axis) ──
+      if (Math.abs(fly.yaw) > 0.0001) {
+        const ct = controls.target.clone().sub(camera.position);
+        _rotAxis.copy(_flyUp);
+        _quat.setFromAxisAngle(_rotAxis, fly.yaw);
+        ct.applyQuaternion(_quat);
+        controls.target.copy(camera.position).add(ct);
+      }
+
+      // ── apply pitch (rotate target around camera on right axis) ──
+      if (Math.abs(fly.pitch) > 0.0001) {
+        const ct = controls.target.clone().sub(camera.position);
+        _rotAxis.copy(_flyRight);
+        _quat.setFromAxisAngle(_rotAxis, fly.pitch);
+        ct.applyQuaternion(_quat);
+        controls.target.copy(camera.position).add(ct);
       }
 
       if (selectionRing.visible) {

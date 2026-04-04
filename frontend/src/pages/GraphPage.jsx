@@ -442,56 +442,37 @@ export default function GraphPage() {
                 </Suspense>
               </ErrorBoundary>
               <div className="graph-controls">
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={() => graphRef.current?.zoomIn()}
-                  title="Zoom In"
-                >+</button>
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={() => graphRef.current?.zoomOut()}
-                  title="Zoom Out"
-                >−</button>
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={() => graphRef.current?.zoomToFit(800, 100)}
-                  title="Reset View (Home)"
-                >⌂</button>
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={() => {
+                <button className="graph-ctrl-btn" onClick={() => graphRef.current?.zoomIn()} title="Zoom In">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button className="graph-ctrl-btn" onClick={() => graphRef.current?.zoomOut()} title="Zoom Out">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button className="graph-ctrl-btn" onClick={() => graphRef.current?.zoomToFit(800, 100)} title="Reset View (Home)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                </button>
+                <button className="graph-ctrl-btn" onClick={() => {
                     const el = graphContainerRef.current;
                     if (!el) return;
-                    if (document.fullscreenElement) {
-                      document.exitFullscreen();
-                    } else {
-                      el.requestFullscreen();
-                    }
-                  }}
-                  title="Fullscreen (F11)"
-                >⛶</button>
+                    if (document.fullscreenElement) document.exitFullscreen();
+                    else el.requestFullscreen();
+                  }} title="Fullscreen (F11)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                </button>
                 <div className="graph-ctrl-divider" />
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={handleScreenshot}
-                  title="Screenshot"
-                >📷</button>
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={handleExportJSON}
-                  title="Export JSON"
-                >💾</button>
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={handleExportCSV}
-                  title="Export CSV"
-                >📊</button>
+                <button className="graph-ctrl-btn" onClick={handleScreenshot} title="Screenshot">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                </button>
+                <button className="graph-ctrl-btn" onClick={handleExportJSON} title="Export JSON">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </button>
+                <button className="graph-ctrl-btn" onClick={handleExportCSV} title="Export CSV">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                </button>
                 <div className="graph-ctrl-divider" />
-                <button
-                  className="graph-ctrl-btn"
-                  onClick={() => setShowHelp((v) => !v)}
-                  title="Help (?)"
-                >?</button>
+                <button className="graph-ctrl-btn" onClick={() => setShowHelp((v) => !v)} title="Help (?)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                </button>
               </div>
               {showHelp && (
                 <div className="help-overlay" onClick={dismissHelp}>
@@ -505,14 +486,14 @@ export default function GraphPage() {
                       <span className="help-key">Double-click</span><span>Node details</span>
                       <span className="help-key">Right-click</span><span>Context menu</span>
                     </div>
-                    <h3>Fly Controls</h3>
+                    <h3>Fly Mode</h3>
                     <div className="help-grid">
-                      <span className="help-key">W / &#x2191;</span><span>Forward</span>
-                      <span className="help-key">S / &#x2193;</span><span>Backward</span>
-                      <span className="help-key">A / &#x2190;</span><span>Strafe left</span>
-                      <span className="help-key">D / &#x2192;</span><span>Strafe right</span>
-                      <span className="help-key">Q / Space</span><span>Up</span>
-                      <span className="help-key">E / Shift</span><span>Down</span>
+                      <span className="help-key">W / &#x2191;</span><span>Thrust forward</span>
+                      <span className="help-key">S / &#x2193;</span><span>Thrust backward</span>
+                      <span className="help-key">A / &#x2190;</span><span>Turn left</span>
+                      <span className="help-key">D / &#x2192;</span><span>Turn right</span>
+                      <span className="help-key">Q / Space</span><span>Pitch up</span>
+                      <span className="help-key">E / Shift</span><span>Pitch down</span>
                     </div>
                     <h3>Shortcuts</h3>
                     <div className="help-grid">
