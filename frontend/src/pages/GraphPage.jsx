@@ -488,12 +488,12 @@ export default function GraphPage() {
                     </div>
                     <h3>Fly Mode</h3>
                     <div className="help-grid">
-                      <span className="help-key">W / &#x2191;</span><span>Thrust forward</span>
-                      <span className="help-key">S / &#x2193;</span><span>Thrust backward</span>
+                      <span className="help-key">Z</span><span>Thrust forward</span>
+                      <span className="help-key">X</span><span>Thrust backward</span>
                       <span className="help-key">A / &#x2190;</span><span>Turn left</span>
                       <span className="help-key">D / &#x2192;</span><span>Turn right</span>
-                      <span className="help-key">Q / Space</span><span>Pitch up</span>
-                      <span className="help-key">E / Shift</span><span>Pitch down</span>
+                      <span className="help-key">W / &#x2191;</span><span>Pitch up</span>
+                      <span className="help-key">S / &#x2193;</span><span>Pitch down</span>
                     </div>
                     <h3>Shortcuts</h3>
                     <div className="help-grid">

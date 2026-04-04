@@ -504,9 +504,9 @@ export default function GraphView3DLarge({
 
     // ── fly state: thrust has inertia, turning is instant ──
     const fly = { thrust: 0 };
-    const FLY_ACCEL = 0.013;      // thrust acceleration per frame
+    const FLY_ACCEL = 0.006;      // thrust acceleration per frame
     const FLY_FRICTION = 0.92;    // thrust decay when key released
-    const FLY_MAX_THRUST = 1.0;   // max thrust velocity cap
+    const FLY_MAX_THRUST = 0.015; // max thrust velocity cap
     const FLY_TURN_RATE = 0.008;  // instant turn rate (rad/frame)
 
     function animate() {
@@ -523,10 +523,10 @@ export default function GraphView3DLarge({
       // scale acceleration by zoom distance (farther = faster)
       const distScale = Math.max(0.3, lookDist * 0.003);
 
-      // ── thrust input ──
+      // ── thrust input (Z = forward, X = backward) ──
       const thrustInput =
-        (keys.has("w") || keys.has("arrowup") ? 1 : 0) +
-        (keys.has("s") || keys.has("arrowdown") ? -1 : 0);
+        (keys.has("z") ? 1 : 0) +
+        (keys.has("x") ? -1 : 0);
 
       if (thrustInput !== 0) {
         fly.thrust += thrustInput * FLY_ACCEL * distScale;
@@ -536,15 +536,15 @@ export default function GraphView3DLarge({
         if (Math.abs(fly.thrust) < 0.001) fly.thrust = 0;
       }
 
-      // ── yaw: instant turn left/right ──
+      // ── yaw: turn left/right (A/D or Left/Right arrows) ──
       const yaw =
         (keys.has("a") || keys.has("arrowleft") ? 1 : 0) +
         (keys.has("d") || keys.has("arrowright") ? -1 : 0);
 
-      // ── pitch: instant climb/dive ──
+      // ── pitch: look up/down (W/S or Up/Down arrows) ──
       const pitch =
-        (keys.has("q") || keys.has(" ") ? 1 : 0) +
-        (keys.has("e") || keys.has("shift") ? -1 : 0);
+        (keys.has("w") || keys.has("arrowup") ? 1 : 0) +
+        (keys.has("s") || keys.has("arrowdown") ? -1 : 0);
 
       // ── apply thrust (translate camera + target along look dir) ──
       if (Math.abs(fly.thrust) > 0.001) {
@@ -1436,9 +1436,8 @@ export default function GraphView3DLarge({
   /* ── Effect 7: keyboard fly controls + escape ──────── */
   useEffect(() => {
     const FLY_KEYS = new Set([
-      "w", "a", "s", "d", "q", "e",
+      "w", "a", "s", "d", "z", "x",
       "arrowup", "arrowdown", "arrowleft", "arrowright",
-      " ", "shift",
     ]);
 
     const handleKeyDown = (e) => {
