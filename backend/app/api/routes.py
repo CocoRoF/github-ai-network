@@ -3,7 +3,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Author, Repository, Topic, RepoTopic
+from app.models import Author, Repository, Topic, RepoTopic, RepoContributor
 from app.graph.builder import GraphBuilder
 
 router = APIRouter()
@@ -72,7 +72,8 @@ async def get_node_detail(
         repo = (await db.execute(select(Repository).where(Repository.id == db_id))).scalar_one_or_none()
         if not repo:
             return {"error": "Not found"}
-        return {
+
+        result = {
             "id": node_id, "type": "repo", "label": repo.full_name,
             "description": repo.description, "stars": repo.stars,
             "forks": repo.forks_count, "language": repo.language,
@@ -86,11 +87,57 @@ async def get_node_detail(
             "repo_updated_at": repo.repo_updated_at.isoformat() if repo.repo_updated_at else None,
             "url": f"https://github.com/{repo.full_name}",
         }
+
+        # Enrichment: top contributors
+        contrib_rows = (await db.execute(
+            select(RepoContributor, Author)
+            .join(Author, RepoContributor.author_id == Author.id)
+            .where(RepoContributor.repository_id == db_id)
+            .order_by(RepoContributor.contributions.desc())
+            .limit(10)
+        )).all()
+        result["contributors"] = [
+            {
+                "id": f"author:{a.id}", "login": a.login, "name": a.name,
+                "avatar_url": a.avatar_url, "followers": a.followers or 0,
+                "contributions": rc.contributions or 0,
+            }
+            for rc, a in contrib_rows
+        ]
+
+        # Enrichment: owner details
+        if repo.owner_id:
+            owner = (await db.execute(select(Author).where(Author.id == repo.owner_id))).scalar_one_or_none()
+            if owner:
+                result["owner"] = {
+                    "id": f"author:{owner.id}", "login": owner.login, "name": owner.name,
+                    "avatar_url": owner.avatar_url, "bio": owner.bio,
+                    "followers": owner.followers or 0, "public_repos": owner.public_repos or 0,
+                }
+                # Owner's other repos (top 8 by stars, excluding current)
+                other_repos = (await db.execute(
+                    select(Repository)
+                    .where(Repository.owner_id == repo.owner_id, Repository.id != db_id)
+                    .order_by(Repository.stars.desc())
+                    .limit(8)
+                )).scalars().all()
+                result["owner_repos"] = [
+                    {
+                        "id": f"repo:{r.id}", "label": r.full_name,
+                        "stars": r.stars or 0, "language": r.language,
+                        "description": (r.description or "")[:120],
+                    }
+                    for r in other_repos
+                ]
+
+        return result
+
     elif node_type == "author":
         author = (await db.execute(select(Author).where(Author.id == db_id))).scalar_one_or_none()
         if not author:
             return {"error": "Not found"}
-        return {
+
+        result = {
             "id": node_id, "type": "author", "label": author.login,
             "name": author.name, "bio": author.bio, "company": author.company,
             "location": author.location,
@@ -99,15 +146,73 @@ async def get_node_detail(
             "avatar_url": author.avatar_url,
             "url": f"https://github.com/{author.login}",
         }
+
+        # Enrichment: owned repos (top 10 by stars)
+        owned = (await db.execute(
+            select(Repository)
+            .where(Repository.owner_id == db_id)
+            .order_by(Repository.stars.desc())
+            .limit(10)
+        )).scalars().all()
+        result["owned_repos"] = [
+            {
+                "id": f"repo:{r.id}", "label": r.full_name,
+                "stars": r.stars or 0, "language": r.language,
+                "description": (r.description or "")[:120],
+            }
+            for r in owned
+        ]
+
+        # Enrichment: contributed repos (top 10 by contributions, excluding owned)
+        owned_ids = {r.id for r in owned}
+        contrib_rows = (await db.execute(
+            select(RepoContributor, Repository)
+            .join(Repository, RepoContributor.repository_id == Repository.id)
+            .where(RepoContributor.author_id == db_id)
+            .order_by(RepoContributor.contributions.desc())
+            .limit(15)
+        )).all()
+        result["contributed_repos"] = [
+            {
+                "id": f"repo:{r.id}", "label": r.full_name,
+                "stars": r.stars or 0, "language": r.language,
+                "contributions": rc.contributions or 0,
+                "description": (r.description or "")[:120],
+            }
+            for rc, r in contrib_rows if r.id not in owned_ids
+        ][:10]
+
+        return result
+
     elif node_type == "topic":
         topic = (await db.execute(select(Topic).where(Topic.id == db_id))).scalar_one_or_none()
         if not topic:
             return {"error": "Not found"}
-        # Count how many repos have this topic
         repo_count = (await db.execute(
             select(func.count()).where(RepoTopic.topic_id == db_id)
         )).scalar() or 0
-        return {"id": node_id, "type": "topic", "label": topic.name, "repo_count": repo_count}
+
+        # Enrichment: top repos with this topic
+        top_repos = (await db.execute(
+            select(Repository)
+            .join(RepoTopic, RepoTopic.repository_id == Repository.id)
+            .where(RepoTopic.topic_id == db_id)
+            .order_by(Repository.stars.desc())
+            .limit(8)
+        )).scalars().all()
+
+        return {
+            "id": node_id, "type": "topic", "label": topic.name,
+            "repo_count": repo_count,
+            "top_repos": [
+                {
+                    "id": f"repo:{r.id}", "label": r.full_name,
+                    "stars": r.stars or 0, "language": r.language,
+                    "description": (r.description or "")[:120],
+                }
+                for r in top_repos
+            ],
+        }
 
     return {"error": "Unknown type"}
 
