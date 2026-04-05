@@ -179,7 +179,7 @@ function getOrCreateLabelTexture(cache, nodeId, text, color) {
   return entry;
 }
 
-function updateLabels(state, data, style) {
+function updateLabels(state, data, style, highlightSet) {
   const { labelSprites, labelTextureCache, camera } = state;
   if (
     !labelSprites ||
@@ -202,8 +202,10 @@ function updateLabels(state, data, style) {
   const maxDistSq = maxDist * maxDist;
 
   // Find candidate nodes within range
+  // When a node is selected, only show labels for highlighted (3-hop) nodes
   const candidates = [];
   for (let i = 0; i < nc; i++) {
+    if (highlightSet && !highlightSet.has(nodes[i].id)) continue;
     const dx = positions[i * 3] - camPos.x;
     const dy = positions[i * 3 + 1] - camPos.y;
     const dz = positions[i * 3 + 2] - camPos.z;
@@ -298,6 +300,7 @@ export default function GraphView3DLarge({
   onNodeDoubleClickRef.current = onNodeDoubleClick;
   styleRef.current = style;
   selectedNodeRef.current = selectedNode;
+  const highlightSetRef = useRef(null);
 
   /* ── adjacency + highlight set ─────────────────────── */
   const adjacencyMap = useMemo(() => {
@@ -334,6 +337,7 @@ export default function GraphView3DLarge({
     }
     return visited;
   }, [selectedNode, adjacencyMap, maxHops]);
+  highlightSetRef.current = highlightSet;
 
   /* ── val range for node sizing ─────────────────────── */
   const valRange = useMemo(() => {
@@ -585,7 +589,7 @@ export default function GraphView3DLarge({
       const st = threeRef.current;
       if (st && now - st.labelLastUpdate > LABEL_UPDATE_MS) {
         st.labelLastUpdate = now;
-        updateLabels(st, dataRef.current, styleRef.current);
+        updateLabels(st, dataRef.current, styleRef.current, highlightSetRef.current);
       }
 
       const comp = threeRef.current?.composer;
