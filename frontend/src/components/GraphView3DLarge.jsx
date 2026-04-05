@@ -1078,27 +1078,31 @@ export default function GraphView3DLarge({
         // Normal state — vivid type colors
         tmpColor.set(baseColor);
       } else if (node.id === selectedNode?.id) {
-        // Selected — near-white bright glow
+        // Selected — intense white-hot glow (bloom magnet)
         tmpColor.set(brightColor);
         brightTmp.setRGB(1, 1, 1);
-        tmpColor.lerp(brightTmp, 0.5); // blend toward white
+        tmpColor.lerp(brightTmp, 0.65); // stronger white blend
+        tmpColor.multiplyScalar(1.4);   // push beyond 1.0 for HDR bloom
+        tmpColor.r = Math.min(tmpColor.r, 2.0);
+        tmpColor.g = Math.min(tmpColor.g, 2.0);
+        tmpColor.b = Math.min(tmpColor.b, 2.0);
       } else if (hl.has(node.id)) {
         const hop = hl.get(node.id);
         if (hop === 1) {
-          // Hop 1 — bright vivid color
-          tmpColor.set(brightColor);
+          // Hop 1 — vivid bright, strong bloom
+          tmpColor.set(brightColor).multiplyScalar(1.2);
         } else if (hop === 2) {
           // Hop 2 — medium bright
           tmpColor.set(baseColor);
           brightTmp.set(brightColor);
-          tmpColor.lerp(brightTmp, 0.4);
+          tmpColor.lerp(brightTmp, 0.5);
         } else {
           // Hop 3 — slightly brighter than normal
-          tmpColor.set(baseColor).multiplyScalar(0.7);
+          tmpColor.set(baseColor).multiplyScalar(0.6);
         }
       } else {
-        // Dimmed — visible but subdued (not invisible)
-        tmpColor.set(baseColor).multiplyScalar(0.12);
+        // Dimmed — very faint, bloom won't pick these up
+        tmpColor.set(baseColor).multiplyScalar(0.04);
       }
 
       nodesMesh.setColorAt(i, tmpColor);
@@ -1107,7 +1111,23 @@ export default function GraphView3DLarge({
 
     // Boost glow during selection for highlighted nodes
     if (nodesMesh.material.uniforms?.uGlowIntensity) {
-      nodesMesh.material.uniforms.uGlowIntensity.value = hl ? 1.15 : 1.0;
+      nodesMesh.material.uniforms.uGlowIntensity.value = hl ? 1.5 : 1.0;
+    }
+
+    // Dynamically adjust bloom: stronger + higher threshold during selection
+    // so only bright highlighted nodes produce bloom halos
+    const t = threeRef.current;
+    if (t?.bloomPass) {
+      const s = styleRef.current;
+      if (hl) {
+        t.bloomPass.strength = s.bloomStrength * 1.8;
+        t.bloomPass.radius = s.bloomRadius * 1.4;
+        t.bloomPass.threshold = 0.25; // raise threshold — dim nodes won't bloom
+      } else {
+        t.bloomPass.strength = s.bloomStrength;
+        t.bloomPass.radius = s.bloomRadius;
+        t.bloomPass.threshold = s.bloomThreshold;
+      }
     }
 
     // Update edge colors with 3-hop gradient
@@ -1141,8 +1161,8 @@ export default function GraphView3DLarge({
             }
             // hop 3: normal color
           } else {
-            // Dimmed edge
-            tmpColor.setRGB(0.03, 0.03, 0.06);
+            // Dimmed edge — nearly invisible
+            tmpColor.setRGB(0.01, 0.01, 0.02);
           }
           colorArr[i * 6 + 0] = tmpColor.r;
           colorArr[i * 6 + 1] = tmpColor.g;
