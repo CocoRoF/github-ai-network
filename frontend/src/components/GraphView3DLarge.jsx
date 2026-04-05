@@ -1116,7 +1116,6 @@ export default function GraphView3DLarge({
 
     // Dynamically adjust bloom: stronger + higher threshold during selection
     // so only bright highlighted nodes produce bloom halos
-    const t = threeRef.current;
     if (t?.bloomPass) {
       const s = styleRef.current;
       if (hl) {
