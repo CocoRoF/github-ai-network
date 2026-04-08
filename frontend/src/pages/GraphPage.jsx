@@ -51,6 +51,8 @@ export default function GraphPage() {
     autoOrbit: false,
     starField: true,
     fogDensity: 0.0006,
+    spreadFactor: "auto",
+    flySpeed: 1.0,
   });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showStatsModal, setShowStatsModal] = useState(false);
@@ -403,6 +405,7 @@ export default function GraphPage() {
             graphStyle={graphStyle}
             onStyleChange={setGraphStyle}
             onStatsClick={() => setShowStatsModal(true)}
+            graphRef={graphRef}
           />
         </div>
         <div className="graph-container" ref={graphContainerRef}>

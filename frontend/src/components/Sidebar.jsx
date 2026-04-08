@@ -14,6 +14,7 @@ export default function Sidebar({
   graphStyle,
   onStyleChange,
   onStatsClick,
+  graphRef,
 }) {
   const [editingStars, setEditingStars] = useState(false);
   const [starsInput, setStarsInput] = useState("");
@@ -439,6 +440,62 @@ export default function Sidebar({
               onStyleChange({ ...graphStyle, fogDensity: +e.target.value })
             }
           />
+        </div>
+      </div>
+
+      {/* ── Camera & Layout ─────────────────────────────── */}
+      <div className="sidebar-section">
+        <h3>Camera & Layout</h3>
+
+        <div className="filter-group">
+          <label>Fly Speed: {(graphStyle.flySpeed ?? 1.0).toFixed(1)}x</label>
+          <input
+            type="range"
+            min={0.2}
+            max={3.0}
+            step={0.1}
+            value={graphStyle.flySpeed ?? 1.0}
+            onChange={(e) =>
+              onStyleChange({ ...graphStyle, flySpeed: +e.target.value })
+            }
+          />
+        </div>
+
+        <div className="filter-group">
+          <label>
+            Spread:{" "}
+            {graphStyle.spreadFactor === "auto"
+              ? "Auto"
+              : (graphStyle.spreadFactor ?? 1.0).toFixed(1) + "x"}
+          </label>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="range"
+              min={0.5}
+              max={3.0}
+              step={0.1}
+              style={{ flex: 1 }}
+              value={
+                graphStyle.spreadFactor === "auto"
+                  ? 1.0
+                  : graphStyle.spreadFactor ?? 1.0
+              }
+              onChange={(e) => {
+                onStyleChange({ ...graphStyle, spreadFactor: +e.target.value });
+                graphRef?.current?.reheatLayout();
+              }}
+            />
+            <button
+              className={`btn btn-sm${graphStyle.spreadFactor === "auto" ? " btn-primary" : ""}`}
+              onClick={() => {
+                onStyleChange({ ...graphStyle, spreadFactor: "auto" });
+                graphRef?.current?.reheatLayout();
+              }}
+              title="Auto spread based on node count"
+            >
+              Auto
+            </button>
+          </div>
         </div>
       </div>
 

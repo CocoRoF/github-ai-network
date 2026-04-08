@@ -56,6 +56,7 @@ function useGraphierStyle(graphStyle) {
       autoOrbit: graphStyle.autoOrbit ?? false,
       starField: graphStyle.starField ?? true,
       fogDensity: graphStyle.fogDensity ?? 0.0006,
+      flySpeed: graphStyle.flySpeed ?? 1.0,
       maxLabels: 150,
     }),
     [graphStyle]
@@ -64,11 +65,11 @@ function useGraphierStyle(graphStyle) {
 
 function useGraphierLayout(graphStyle) {
   return useMemo(
-    () =>
-      graphStyle.alphaDecay
-        ? { alphaDecay: graphStyle.alphaDecay }
-        : undefined,
-    [graphStyle.alphaDecay]
+    () => ({
+      ...(graphStyle.alphaDecay ? { alphaDecay: graphStyle.alphaDecay } : {}),
+      spreadFactor: graphStyle.spreadFactor ?? "auto",
+    }),
+    [graphStyle.alphaDecay, graphStyle.spreadFactor]
   );
 }
 
@@ -105,6 +106,9 @@ export default function GraphView3DLarge({
     },
     captureScreenshot() {
       return internalRef.current?.captureScreenshot() ?? null;
+    },
+    reheatLayout() {
+      internalRef.current?.reheatLayout();
     },
     scene() {
       return internalRef.current?.getScene();
