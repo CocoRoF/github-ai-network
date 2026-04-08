@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "d3-force-3d": "^3.0.6",
+    "@cocorof/graphier": "^1.1.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.20.0",

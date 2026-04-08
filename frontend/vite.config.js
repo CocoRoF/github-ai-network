@@ -9,6 +9,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           three: ["three"],
+          graphier: ["@cocorof/graphier"],
         },
       },
     },
