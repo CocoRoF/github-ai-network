@@ -487,6 +487,7 @@ export default function Sidebar({
             />
             <button
               className={`btn btn-sm${graphStyle.spreadFactor === "auto" ? " btn-primary" : ""}`}
+              style={{ flexShrink: 0, width: "auto" }}
               onClick={() => {
                 onStyleChange({ ...graphStyle, spreadFactor: "auto" });
                 graphRef?.current?.reheatLayout();
